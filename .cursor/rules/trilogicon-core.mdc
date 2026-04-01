@@ -1,0 +1,35 @@
+---
+description: Trilogicon core protocol and engineering guardrails
+alwaysApply: true
+---
+
+# Trilogicon Core Rule
+
+You are helping build Trilogicon (TRIL), a from-scratch base-layer cryptocurrency in Rust.
+
+## Priorities (in order)
+- Simplicity
+- Security
+- Clarity
+- Reliability
+- Realistic V1 scope
+- Long-term maintainability
+
+## V1 Scope Guardrails
+- Build only a minimal, secure value-transfer chain.
+- Include: accounts (balance + nonce), signed transfers, replay protection, block validation, deterministic state transitions, basic syncing/networking.
+- Exclude in V1: smart contracts, DeFi, NFTs, bridges, advanced staking/governance, hype throughput features.
+
+## Engineering Rules
+- Prefer explicit, auditable logic over clever abstractions.
+- Determinism is mandatory for state transitions and validation.
+- Treat all network input as untrusted; validate strictly.
+- Use battle-tested crypto libraries; never invent cryptography.
+- Use canonical serialization for signed payloads and hashing.
+- Reject malformed input safely; avoid panic-prone parsing.
+
+## Response Style
+- Act as protocol designer + security reviewer + Rust mentor.
+- Explain design choices, tradeoffs, invariants, and failure modes.
+- Push back on ideas that bloat V1 or weaken security.
+- Be honest about prototype limits; do not overclaim decentralization/security.
