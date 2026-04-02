@@ -1,4 +1,4 @@
-﻿use crate::block::Block;
+use crate::block::Block;
 use crate::errors::ProtocolError;
 use crate::state::State;
 
@@ -51,11 +51,14 @@ impl Blockchain {
             )));
         }
     
-        // Apply transactions in order before accepting block.
+        // Apply all transactions atomically: clone state, apply on the copy,
+        // commit only if every tx succeeds (no partial block effects).
+        let mut next_state = self.state.clone();
         for tx in &block.transactions {
-            self.state.apply_transaction(tx)?;
+            next_state.apply_transaction(tx)?;
         }
-    
+        self.state = next_state;
+
         self.blocks.push(block);
         Ok(())
     }
@@ -289,4 +292,67 @@ fn append_block_does_not_advance_height_on_state_failure() {
     assert_eq!(chain.height(), 0);
     assert_eq!(chain.len(), 1);
 }
+
+    #[test]
+    fn append_block_rejects_mid_block_failure_without_partial_state() {
+        let mut chain = Blockchain::new();
+
+        let signing_key = SigningKey::from_bytes(&[40u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let receiver_a = Address::new("receiver_atomic_a");
+        let receiver_b = Address::new("receiver_atomic_b");
+
+        chain.state_mut().create_account(sender_addr.clone(), 20);
+
+        let mut tx1 = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_a.clone(),
+            amount: 5,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_003_000,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let p1 = tx1.unsigned_payload_bytes();
+        tx1.signature = signing_key.sign(&p1).to_bytes().to_vec();
+        tx1.tx_hash = Crypto::hash_bytes(&p1);
+
+        let mut tx2 = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_b,
+            amount: 20,
+            fee: 1,
+            nonce: 1,
+            timestamp_unix: 1_700_003_001,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let p2 = tx2.unsigned_payload_bytes();
+        tx2.signature = signing_key.sign(&p2).to_bytes().to_vec();
+        tx2.tx_hash = Crypto::hash_bytes(&p2);
+
+        let block = Block {
+            height: 1,
+            previous_hash: "GENESIS_HASH".to_string(),
+            timestamp_unix: 1_700_003_002,
+            transactions: vec![tx1, tx2],
+            block_hash: "atomic_fail_block".to_string(),
+        };
+
+        assert!(matches!(
+            chain.append_block(block),
+            Err(ProtocolError::InsufficientBalance)
+        ));
+        assert_eq!(chain.height(), 0);
+        assert_eq!(chain.len(), 1);
+
+        let sender = chain.state().get_account(&sender_addr).unwrap();
+        assert_eq!(sender.balance, 20);
+        assert_eq!(sender.nonce, 0);
+        assert!(chain.state().get_account(&receiver_a).is_none());
+    }
 }

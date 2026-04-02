@@ -1,10 +1,10 @@
-﻿use std::collections::HashMap;
+use std::collections::HashMap;
 
 use crate::errors::ProtocolError;
 use crate::transaction::Transaction;
 use crate::types::{Account, Address};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct State {
     accounts: HashMap<Address, Account>,
 }
