@@ -20,6 +20,14 @@ The goal is to do a few important things well:
 
 ## Included in V1
 
+### Chain identity
+
+- Trilogicon v1 is a standalone base-layer blockchain.
+- TRIL is the chain’s native asset.
+- Trilogicon v1 is not a token deployed on another chain.
+
+---
+
 ### Ledger and accounts
 
 - native TRIL currency
