@@ -4,8 +4,8 @@
 - [x] V1 scope is documented
 - [x] V1 freeze is documented
 - [x] Genesis behavior is documented
-- [ ] Transaction validation rules are documented
-- [ ] Block validation rules are documented
+- [x] Transaction validation rules are documented
+- [x] Block validation rules are documented
 
 ## Tests
 - [x] `cargo test` passes
