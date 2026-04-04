@@ -11,7 +11,7 @@ use node::block::Block;
 use node::blockchain::Blockchain;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
-use node::network::{spawn_incoming_loop, sync_from_peer, NodeInner};
+use node::network::{NodeInner, spawn_incoming_loop, sync_from_peer};
 use node::storage::BlockStore;
 use node::transaction::Transaction;
 use node::wallet::Wallet;

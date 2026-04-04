@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::block::Block;
 use crate::blockchain::Blockchain;
-use crate::encoding::{decode_block, encode_block, EncodeError};
+use crate::encoding::{EncodeError, decode_block, encode_block};
 use crate::errors::ProtocolError;
 use crate::genesis::Genesis;
 
@@ -62,10 +62,7 @@ pub struct BlockStore {
 
 impl BlockStore {
     pub fn open_append(path: impl AsRef<Path>) -> io::Result<Self> {
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let file = OpenOptions::new().create(true).append(true).open(path)?;
         Ok(Self { file })
     }
 
@@ -133,9 +130,7 @@ pub fn load_blockchain_from_disk(
     let blocks = BlockStore::read_all_blocks(path)?;
     let mut chain = chain_from_genesis(genesis)?;
     for block in blocks {
-        chain
-            .append_block(block)
-            .map_err(StorageError::Replay)?;
+        chain.append_block(block).map_err(StorageError::Replay)?;
     }
     Ok(chain)
 }
@@ -177,7 +172,14 @@ mod tests {
         ))
     }
 
-    fn signed_tx(seed: u8, receiver: &str, amount: u64, fee: u64, nonce: u64, ts: u64) -> Transaction {
+    fn signed_tx(
+        seed: u8,
+        receiver: &str,
+        amount: u64,
+        fee: u64,
+        nonce: u64,
+        ts: u64,
+    ) -> Transaction {
         let signing_key = SigningKey::from_bytes(&[seed; 32]);
         let verifying_key = signing_key.verifying_key();
         let mut tx = Transaction {
@@ -269,7 +271,7 @@ mod tests {
     fn truncated_file_errors() {
         let path = unique_store_path("trunc");
         let _ = std::fs::remove_file(&path);
-        std::fs::write(&path, &[0u8, 0u8, 0u8, 0x10]).unwrap();
+        std::fs::write(&path, [0u8, 0u8, 0u8, 0x10]).unwrap();
         assert!(load_blockchain_from_disk(&path, &Genesis::empty()).is_err());
         let _ = std::fs::remove_file(&path);
     }

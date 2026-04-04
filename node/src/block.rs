@@ -32,7 +32,11 @@ impl Block {
     /// Field order: height | previous_hash | timestamp | tx_hash_0 | tx_hash_1 | ...
     /// Every included transaction must already pass `basic_validate` so `tx_hash` is meaningful.
     pub fn block_header_preimage_bytes(&self) -> Vec<u8> {
-        let tx_hashes: Vec<&str> = self.transactions.iter().map(|t| t.tx_hash.as_str()).collect();
+        let tx_hashes: Vec<&str> = self
+            .transactions
+            .iter()
+            .map(|t| t.tx_hash.as_str())
+            .collect();
         let joined = tx_hashes.join("|");
         format!(
             "{}|{}|{}|{}",
@@ -47,7 +51,9 @@ impl Block {
 
     pub fn validate_block_hash(&self) -> Result<(), ProtocolError> {
         if self.block_hash.trim().is_empty() {
-            return Err(ProtocolError::InvalidBlock("missing block hash".to_string()));
+            return Err(ProtocolError::InvalidBlock(
+                "missing block hash".to_string(),
+            ));
         }
         let expected = self.compute_block_hash();
         if self.block_hash != expected {

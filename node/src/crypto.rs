@@ -1,4 +1,4 @@
-﻿use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 
 pub struct Crypto;
@@ -8,7 +8,7 @@ impl Crypto {
         let digest = Sha256::digest(payload);
         hex::encode(digest)
     }
-    
+
     pub fn address_from_public_key(public_key: &[u8]) -> String {
         Self::hash_bytes(public_key)
     }

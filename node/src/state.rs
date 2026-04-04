@@ -35,7 +35,7 @@ impl State {
             .iter()
             .map(|(a, ac)| (a.clone(), ac.clone()))
             .collect();
-        v.sort_by(|x, y| x.0 .0.cmp(&y.0 .0));
+        v.sort_by(|x, y| x.0.0.cmp(&y.0.0));
         v
     }
 

@@ -88,7 +88,7 @@ impl Genesis {
             .iter()
             .map(|a| (Address::new(a.address.clone()), a.balance))
             .collect();
-        pairs.sort_by(|x, y| x.0 .0.cmp(&y.0 .0));
+        pairs.sort_by(|x, y| x.0.0.cmp(&y.0.0));
         for w in pairs.windows(2) {
             if w[0].0 == w[1].0 {
                 return Err(ProtocolError::GenesisError(format!(

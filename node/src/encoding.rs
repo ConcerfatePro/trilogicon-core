@@ -172,7 +172,9 @@ pub fn decode_block(data: &[u8]) -> Result<Block, EncodeError> {
     }
     let ver = c.take_u8()?;
     if ver != BLOCK_FORMAT_VERSION {
-        return Err(EncodeError(format!("unsupported block format version {ver}")));
+        return Err(EncodeError(format!(
+            "unsupported block format version {ver}"
+        )));
     }
     let height = c.take_u64_be()?;
     let previous_hash = c.take_string()?;
@@ -182,8 +184,7 @@ pub fn decode_block(data: &[u8]) -> Result<Block, EncodeError> {
     for i in 0..n {
         let len = c.take_u32_be()? as usize;
         let chunk = c.take_exact(len)?;
-        let tx = decode_transaction(chunk)
-            .map_err(|e| EncodeError(format!("tx {i}: {e}")))?;
+        let tx = decode_transaction(chunk).map_err(|e| EncodeError(format!("tx {i}: {e}")))?;
         transactions.push(tx);
     }
     let block_hash = c.take_string()?;

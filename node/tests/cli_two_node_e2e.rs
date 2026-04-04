@@ -75,10 +75,8 @@ fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
     let _ = child_a.wait();
     let _ = child_b.wait();
 
-    let chain_a =
-        load_blockchain_from_disk(&dir_a.join("chain.blocks"), &g.merged).expect("load a");
-    let chain_b =
-        load_blockchain_from_disk(&dir_b.join("chain.blocks"), &g.merged).expect("load b");
+    let chain_a = load_blockchain_from_disk(dir_a.join("chain.blocks"), &g.merged).expect("load a");
+    let chain_b = load_blockchain_from_disk(dir_b.join("chain.blocks"), &g.merged).expect("load b");
 
     assert!(
         chain_a.height() >= 1,

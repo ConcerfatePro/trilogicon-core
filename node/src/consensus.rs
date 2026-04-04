@@ -42,9 +42,12 @@ pub fn validate_block_timestamps_vs_parent(
     candidate: &Block,
     params: &ConsensusParams,
 ) -> Result<(), ProtocolError> {
-    let min_ts = parent.timestamp_unix.checked_add(params.min_block_interval_secs).ok_or_else(|| {
-        ProtocolError::InvalidBlock("block timestamp arithmetic overflow".to_string())
-    })?;
+    let min_ts = parent
+        .timestamp_unix
+        .checked_add(params.min_block_interval_secs)
+        .ok_or_else(|| {
+            ProtocolError::InvalidBlock("block timestamp arithmetic overflow".to_string())
+        })?;
 
     if candidate.timestamp_unix < min_ts {
         return Err(ProtocolError::InvalidBlock(
@@ -61,9 +64,7 @@ pub fn validate_block_vs_local_time(
     now_unix: u64,
     max_future_drift_secs: u64,
 ) -> Result<(), ProtocolError> {
-    let limit = now_unix
-        .checked_add(max_future_drift_secs)
-        .unwrap_or(u64::MAX);
+    let limit = now_unix.saturating_add(max_future_drift_secs);
     if block_ts > limit {
         return Err(ProtocolError::InvalidBlock(
             "block timestamp too far in the future".to_string(),
@@ -92,12 +93,14 @@ mod tests {
             transactions: vec![],
             block_hash: "z".into(),
         };
-        assert!(validate_block_timestamps_vs_parent(
-            &parent,
-            &candidate_ok,
-            &ConsensusParams::default()
-        )
-        .is_ok());
+        assert!(
+            validate_block_timestamps_vs_parent(
+                &parent,
+                &candidate_ok,
+                &ConsensusParams::default()
+            )
+            .is_ok()
+        );
 
         let candidate_early = Block {
             height: 2,
@@ -106,12 +109,14 @@ mod tests {
             transactions: vec![],
             block_hash: "z".into(),
         };
-        assert!(validate_block_timestamps_vs_parent(
-            &parent,
-            &candidate_early,
-            &ConsensusParams::default()
-        )
-        .is_err());
+        assert!(
+            validate_block_timestamps_vs_parent(
+                &parent,
+                &candidate_early,
+                &ConsensusParams::default()
+            )
+            .is_err()
+        );
     }
 
     #[test]

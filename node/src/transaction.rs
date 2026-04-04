@@ -1,6 +1,6 @@
-﻿use crate::errors::ProtocolError;
-use crate::types::Address;
 use crate::crypto::Crypto;
+use crate::errors::ProtocolError;
+use crate::types::Address;
 
 #[derive(Clone, Debug)]
 pub struct Transaction {
@@ -20,7 +20,6 @@ pub struct Transaction {
 }
 
 impl Transaction {
-
     pub fn validate_sender_binding(&self) -> Result<(), ProtocolError> {
         let derived = Crypto::address_from_public_key(&self.public_key);
         if self.sender.0 != derived {
@@ -37,15 +36,17 @@ impl Transaction {
         }
         Ok(())
     }
-    
+
     pub fn compute_tx_hash(&self) -> String {
         Crypto::hash_bytes(&self.unsigned_payload_bytes())
     }
-    
+
     pub fn validate_hash(&self) -> Result<(), ProtocolError> {
         let expected = self.compute_tx_hash();
         if self.tx_hash != expected {
-            return Err(ProtocolError::StateError("transaction hash mismatch".to_string()));
+            return Err(ProtocolError::StateError(
+                "transaction hash mismatch".to_string(),
+            ));
         }
         Ok(())
     }
@@ -55,12 +56,7 @@ impl Transaction {
         // sender|receiver|amount|fee|nonce|timestamp
         format!(
             "{}|{}|{}|{}|{}|{}",
-            self.sender.0,
-            self.receiver.0,
-            self.amount,
-            self.fee,
-            self.nonce,
-            self.timestamp_unix
+            self.sender.0, self.receiver.0, self.amount, self.fee, self.nonce, self.timestamp_unix
         )
         .into_bytes()
     }
@@ -148,6 +144,9 @@ mod tests {
     fn basic_validate_rejects_zero_amount() {
         let mut tx = sample_tx();
         tx.amount = 0;
-        assert!(matches!(tx.basic_validate(), Err(ProtocolError::InvalidAmount)));
+        assert!(matches!(
+            tx.basic_validate(),
+            Err(ProtocolError::InvalidAmount)
+        ));
     }
 }

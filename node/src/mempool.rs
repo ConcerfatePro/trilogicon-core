@@ -54,8 +54,7 @@ impl Mempool {
     /// Drop transactions that were committed in a block (or otherwise finalized).
     pub fn remove_by_tx_hashes<'a>(&mut self, hashes: impl IntoIterator<Item = &'a str>) {
         let remove: std::collections::HashSet<&str> = hashes.into_iter().collect();
-        self.txs
-            .retain(|t| !remove.contains(t.tx_hash.as_str()));
+        self.txs.retain(|t| !remove.contains(t.tx_hash.as_str()));
     }
 }
 
@@ -66,7 +65,14 @@ mod tests {
     use crate::types::Address;
     use ed25519_dalek::{Signer, SigningKey};
 
-    fn signed_tx(seed: u8, receiver: &str, amount: u64, fee: u64, nonce: u64, ts: u64) -> Transaction {
+    fn signed_tx(
+        seed: u8,
+        receiver: &str,
+        amount: u64,
+        fee: u64,
+        nonce: u64,
+        ts: u64,
+    ) -> Transaction {
         let signing_key = SigningKey::from_bytes(&[seed; 32]);
         let verifying_key = signing_key.verifying_key();
 

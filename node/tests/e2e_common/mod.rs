@@ -1,5 +1,6 @@
 //! Shared helpers for subprocess integration tests (`CARGO_BIN_EXE_node`).
 #![allow(dead_code)]
+#![allow(clippy::option_env_unwrap)]
 
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -130,10 +131,10 @@ pub fn setup_two_node_genesis(label: &str) -> TwoNodeGenesis {
         ],
     };
     merged
-        .write_to_path(&dir_a.join("genesis.toml"))
+        .write_to_path(dir_a.join("genesis.toml"))
         .expect("write genesis a");
     merged
-        .write_to_path(&dir_b.join("genesis.toml"))
+        .write_to_path(dir_b.join("genesis.toml"))
         .expect("write genesis b");
 
     TwoNodeGenesis {
@@ -228,7 +229,7 @@ pub fn setup_three_node_genesis(label: &str) -> ThreeNodeGenesis {
     };
     for d in [&dir_a, &dir_b, &dir_c] {
         merged
-            .write_to_path(&d.join("genesis.toml"))
+            .write_to_path(d.join("genesis.toml"))
             .expect("write genesis");
     }
 

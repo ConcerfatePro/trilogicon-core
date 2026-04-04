@@ -88,9 +88,9 @@ fn e2e_two_nodes_restart_and_continue_matching_chains() {
     let _ = child_b.wait();
 
     let chain_a_after_1 =
-        load_blockchain_from_disk(&dir_a.join("chain.blocks"), &g.merged).expect("load a pass1");
+        load_blockchain_from_disk(dir_a.join("chain.blocks"), &g.merged).expect("load a pass1");
     let chain_b_after_1 =
-        load_blockchain_from_disk(&dir_b.join("chain.blocks"), &g.merged).expect("load b pass1");
+        load_blockchain_from_disk(dir_b.join("chain.blocks"), &g.merged).expect("load b pass1");
 
     assert!(
         chain_a_after_1.height() >= 1,
@@ -133,9 +133,9 @@ fn e2e_two_nodes_restart_and_continue_matching_chains() {
     let _ = child_b2.wait();
 
     let chain_a_final =
-        load_blockchain_from_disk(&dir_a.join("chain.blocks"), &g.merged).expect("load a final");
+        load_blockchain_from_disk(dir_a.join("chain.blocks"), &g.merged).expect("load a final");
     let chain_b_final =
-        load_blockchain_from_disk(&dir_b.join("chain.blocks"), &g.merged).expect("load b final");
+        load_blockchain_from_disk(dir_b.join("chain.blocks"), &g.merged).expect("load b final");
 
     assert!(
         chain_a_final.height() >= height_after_first,

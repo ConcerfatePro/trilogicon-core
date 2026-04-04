@@ -1,4 +1,4 @@
-﻿//! Dev CLI: wallet, protocol genesis, chain dir, mempool, optional P2P.
+//! Dev CLI: wallet, protocol genesis, chain dir, mempool, optional P2P.
 //!
 //! ```text
 //! cargo run -p node -- init [--data-dir DIR] [--genesis-balance N]
@@ -20,7 +20,7 @@ use node::encoding::{decode_transaction, encode_transaction};
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::NodeInner;
-use node::storage::{load_blockchain_from_disk, BlockStore};
+use node::storage::{BlockStore, load_blockchain_from_disk};
 use node::transaction::Transaction;
 use node::types::Address;
 use node::wallet::Wallet;
@@ -88,7 +88,11 @@ fn load_wallet(data_dir: &Path) -> std::io::Result<Wallet> {
     if raw.len() != 32 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("expected 32-byte {}, got {} bytes", path.display(), raw.len()),
+            format!(
+                "expected 32-byte {}, got {} bytes",
+                path.display(),
+                raw.len()
+            ),
         ));
     }
     let mut seed = [0u8; 32];
@@ -104,10 +108,7 @@ fn append_pending_tx(path: &Path, tx: &Transaction) -> std::io::Result<()> {
             "encoded transaction length exceeds u32",
         )
     })?;
-    let mut f = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut f = OpenOptions::new().create(true).append(true).open(path)?;
     f.write_all(&len.to_be_bytes())?;
     f.write_all(&payload)?;
     f.sync_all()
@@ -128,7 +129,8 @@ fn drain_pending_txs(path: &Path) -> Result<Vec<Transaction>, String> {
         if pos + 4 > data.len() {
             return Err("pending_tx.tril: truncated length prefix".into());
         }
-        let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         if len as u32 > MAX_PENDING_TX_FRAME {
             return Err("pending_tx.tril: frame too large".into());
@@ -145,6 +147,7 @@ fn drain_pending_txs(path: &Path) -> Result<Vec<Transaction>, String> {
     Ok(out)
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_run_args(
     args: &[String],
 ) -> Result<
@@ -394,7 +397,7 @@ fn cmd_run(
     for p in &peers {
         let now = unix_now_secs();
         let mut g = state.lock().expect("node lock");
-        match node::network::sync_from_peer(&mut *g, p, now) {
+        match node::network::sync_from_peer(&mut g, p, now) {
             Ok(n) if n > 0 => eprintln!("sync: +{n} block(s) from {p}"),
             Ok(_) => {}
             Err(e) => eprintln!("sync from {p}: {e}"),
@@ -436,11 +439,8 @@ fn cmd_run(
             }
 
             let now = unix_now_secs();
-            let NodeInner {
-                chain,
-                pool,
-                store,
-            } = &mut *g;
+            #[allow(clippy::explicit_auto_deref)]
+            let NodeInner { chain, pool, store } = &mut *g;
             match chain.append_block_from_mempool(pool, 64, now) {
                 Ok(0) => None,
                 Ok(n) => {

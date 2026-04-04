@@ -1,6 +1,6 @@
 use crate::block::Block;
 use crate::consensus::{
-    validate_block_timestamps_vs_parent, validate_block_vs_local_time, ConsensusParams,
+    ConsensusParams, validate_block_timestamps_vs_parent, validate_block_vs_local_time,
 };
 use crate::errors::ProtocolError;
 use crate::genesis::Genesis;
@@ -11,6 +11,12 @@ pub struct Blockchain {
     blocks: Vec<Block>,
     state: State,
     consensus: ConsensusParams,
+}
+
+impl Default for Blockchain {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Blockchain {
@@ -24,6 +30,10 @@ impl Blockchain {
 
     pub fn len(&self) -> usize {
         self.blocks.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
     }
 
     pub fn blocks(&self) -> &[Block] {
@@ -97,18 +107,18 @@ impl Blockchain {
 
     pub fn append_block(&mut self, block: Block) -> Result<(), ProtocolError> {
         block.basic_validate()?;
-    
+
         let tip = self
             .blocks
             .last()
             .ok_or_else(|| ProtocolError::StateError(String::from("chain tip missing")))?;
-    
+
         if block.height != tip.height + 1 {
             return Err(ProtocolError::InvalidBlock(String::from(
                 "invalid block height",
             )));
         }
-    
+
         if block.previous_hash != tip.block_hash {
             return Err(ProtocolError::InvalidBlock(String::from(
                 "invalid previous hash",
@@ -557,7 +567,10 @@ mod tests {
         assert_eq!(chain.height(), 1);
         assert!(pool.is_empty());
         assert_eq!(chain.state().get_account(&sender_addr).unwrap().balance, 44);
-        assert_eq!(chain.state().get_account(&receiver_addr).unwrap().balance, 5);
+        assert_eq!(
+            chain.state().get_account(&receiver_addr).unwrap().balance,
+            5
+        );
     }
 
     #[test]
@@ -584,9 +597,11 @@ mod tests {
         tx.tx_hash = Crypto::hash_bytes(&payload);
 
         pool.try_submit(tx.clone()).unwrap();
-        assert!(chain
-            .append_block_from_mempool(&mut pool, 8, 1_700_004_011)
-            .is_err());
+        assert!(
+            chain
+                .append_block_from_mempool(&mut pool, 8, 1_700_004_011)
+                .is_err()
+        );
         assert_eq!(chain.height(), 0);
         assert_eq!(pool.len(), 1);
     }

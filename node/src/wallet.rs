@@ -112,8 +112,8 @@ impl fmt::Debug for Wallet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::rngs::StdRng;
     use rand::SeedableRng;
+    use rand::rngs::StdRng;
 
     #[test]
     fn sign_transfer_passes_basic_validate() {

@@ -6,7 +6,7 @@ use ed25519_dalek::{Signer, SigningKey};
 
 use crate::block::Block;
 use crate::blockchain::Blockchain;
-use crate::consensus::{validate_block_vs_local_time, ConsensusParams};
+use crate::consensus::{ConsensusParams, validate_block_vs_local_time};
 use crate::crypto::Crypto;
 use crate::encoding::{decode_block, decode_transaction, encode_block, encode_transaction};
 use crate::errors::ProtocolError;
@@ -53,8 +53,7 @@ fn v1_rejects_bad_signature() {
 fn v1_rejects_wrong_nonce_when_expected_lower() {
     let mut state = State::new();
     let tx = signed_tx(2, "recv", 1, 1, 1, 1_800_002_000);
-    state
-        .create_account(tx.sender.clone(), 100);
+    state.create_account(tx.sender.clone(), 100);
     assert!(matches!(
         state.apply_transaction(&tx),
         Err(ProtocolError::InvalidNonce)
@@ -211,12 +210,14 @@ fn v1_rejects_malformed_block_encoding_trailing_garbage() {
 
 #[test]
 fn v1_rejects_block_timestamp_violating_min_interval_after_parent() {
-    let mut chain =
-        Blockchain::from_genesis_with_consensus(&crate::genesis::Genesis::empty(), ConsensusParams {
+    let mut chain = Blockchain::from_genesis_with_consensus(
+        &crate::genesis::Genesis::empty(),
+        ConsensusParams {
             min_block_interval_secs: 1_000,
             max_future_drift_secs: u64::MAX,
-        })
-        .expect("genesis");
+        },
+    )
+    .expect("genesis");
     let tx = signed_tx(11, "r", 1, 1, 0, 1_800_011_000);
     chain.state_mut().create_account(tx.sender.clone(), 50);
     let block = seal(Block {

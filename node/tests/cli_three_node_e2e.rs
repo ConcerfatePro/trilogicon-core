@@ -104,11 +104,11 @@ fn e2e_three_nodes_fan_out_send_match_chains() {
     let _ = child_c.wait();
 
     let chain_a =
-        load_blockchain_from_disk(&g.dir_a.join("chain.blocks"), &g.merged).expect("load a");
+        load_blockchain_from_disk(g.dir_a.join("chain.blocks"), &g.merged).expect("load a");
     let chain_b =
-        load_blockchain_from_disk(&g.dir_b.join("chain.blocks"), &g.merged).expect("load b");
+        load_blockchain_from_disk(g.dir_b.join("chain.blocks"), &g.merged).expect("load b");
     let chain_c =
-        load_blockchain_from_disk(&g.dir_c.join("chain.blocks"), &g.merged).expect("load c");
+        load_blockchain_from_disk(g.dir_c.join("chain.blocks"), &g.merged).expect("load c");
 
     assert!(
         chain_a.height() >= 1,

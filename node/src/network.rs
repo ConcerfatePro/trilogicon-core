@@ -101,7 +101,8 @@ pub fn wire_encode_blocks_response(blocks: &[Block]) -> Result<Vec<u8>, String> 
     out.extend_from_slice(&n.to_be_bytes());
     for b in blocks {
         let enc = encode_block(b);
-        let len = u32::try_from(enc.len()).map_err(|_| "encoded block length overflow".to_string())?;
+        let len =
+            u32::try_from(enc.len()).map_err(|_| "encoded block length overflow".to_string())?;
         out.extend_from_slice(&len.to_be_bytes());
         out.extend_from_slice(&enc);
     }
@@ -119,12 +120,8 @@ fn parse_op_blocks_body(data: &[u8]) -> Result<Vec<Block>, String> {
         if pos + 4 > data.len() {
             return Err(format!("truncated block length ({i})"));
         }
-        let len = u32::from_be_bytes([
-            data[pos],
-            data[pos + 1],
-            data[pos + 2],
-            data[pos + 3],
-        ]) as usize;
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
         pos += 4;
         if pos + len > data.len() {
             return Err(format!("truncated block body ({i})"));
@@ -159,18 +156,16 @@ fn process_payload(
 
     match op {
         OP_TX => {
-            let tx = decode_transaction(&payload[1..]).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let tx = decode_transaction(&payload[1..])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             if let Err(e) = inner.pool.try_submit(tx) {
                 eprintln!("network: mempool rejected tx ({e})");
             }
             Ok(None)
         }
         OP_BLOCK => {
-            let block = decode_block(&payload[1..]).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-            })?;
+            let block = decode_block(&payload[1..])
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             if let Err(e) = inner.append_network_block_persist(block, now_unix) {
                 eprintln!("network: rejected block ({e})");
             }
@@ -187,9 +182,8 @@ fn process_payload(
             h.copy_from_slice(&payload[1..9]);
             let start_height = u64::from_be_bytes(h);
             let blocks = inner.chain.blocks_from_height(start_height);
-            let encoded = wire_encode_blocks_response(&blocks).map_err(|e| {
-                io::Error::new(io::ErrorKind::InvalidData, e)
-            })?;
+            let encoded = wire_encode_blocks_response(&blocks)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
             Ok(Some(encoded))
         }
         _ => Err(io::Error::new(
@@ -202,9 +196,7 @@ fn process_payload(
 /// Handle framed messages on one connection until EOF.
 pub fn peer_connection_loop(stream: TcpStream, state: Arc<Mutex<NodeInner>>) -> io::Result<()> {
     let mut stream = stream;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(120)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(120))).ok();
 
     loop {
         let frame = match read_framed(&mut stream) {
@@ -215,7 +207,7 @@ pub fn peer_connection_loop(stream: TcpStream, state: Arc<Mutex<NodeInner>>) -> 
         let now = unix_now_secs();
         let response = {
             let mut g = state.lock().expect("node lock poisoned");
-            process_payload(&frame, &mut *g, now)?
+            process_payload(&frame, &mut g, now)?
         };
         if let Some(resp) = response {
             write_framed(&mut stream, &resp)?;
@@ -253,9 +245,7 @@ pub fn spawn_incoming_loop(
 
 pub fn pull_blocks_from_peer(peer: &str, start_height: u64) -> Result<Vec<Block>, String> {
     let mut stream = TcpStream::connect(peer).map_err(|e| format!("connect {peer}: {e}"))?;
-    stream
-        .set_read_timeout(Some(Duration::from_secs(60)))
-        .ok();
+    stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
     let req = wire_encode_get_blocks(start_height);
     write_framed(&mut stream, &req).map_err(|e| e.to_string())?;
     let resp = read_framed(&mut stream).map_err(|e| e.to_string())?;
@@ -328,7 +318,7 @@ mod tests {
     #[test]
     fn wire_blocks_roundtrip() {
         let b = one_valid_block();
-        let w = wire_encode_blocks_response(&[b.clone()]).unwrap();
+        let w = wire_encode_blocks_response(std::slice::from_ref(&b)).unwrap();
         let out = wire_decode_blocks_response(&w).unwrap();
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].block_hash, b.block_hash);
