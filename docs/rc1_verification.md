@@ -10,6 +10,8 @@ Release candidate: `v1.0.0-rc1`
 - valid transaction flow tested manually
 - restart flow tested manually
 - invalid transaction rejection tested manually
+- missing wallet startup path tested manually
+- missing genesis startup path tested manually
 
 ## Current phase
 RC1 hardening and private technical validation.
