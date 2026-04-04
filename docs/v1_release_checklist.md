@@ -25,3 +25,4 @@
 - [x] known issues are written down
 - [x] release candidate version is chosen; `v1.0.0-rc1`
 - [x] private test plan is ready
+- [x] RC1 verification note is written
