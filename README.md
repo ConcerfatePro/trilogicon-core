@@ -12,6 +12,20 @@ V1 is feature-frozen. The current focus is bug fixing, testing, documentation, o
 
 Design rules live under [`docs/`](docs/) (scope, invariants, architecture). **Genesis** is documented in [`docs/genesis.md`](docs/genesis.md). Module ownership and the consensus boundary are summarized in [`docs/modules.md`](docs/modules.md); the V1 completion checklist is [`docs/v1_checkpoint.md`](docs/v1_checkpoint.md). For fmt/clippy/test and PR expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
+## Troubleshooting
+
+### `wallet.seed already exists`
+`init` will not overwrite an existing wallet. Use a fresh data directory or remove the old test directory first.
+
+### `genesis file not found`
+The node expects `genesis.toml` in the data directory unless `--genesis PATH` is provided. All nodes in the same network must use the same shared genesis.
+
+### Nodes do not match
+Check that both nodes use the same merged `genesis.toml`. Compare genesis state commitment if needed.
+
+### `send` succeeded but no block appeared
+`send` only queues the transaction. A running `run` process must pick it up, seal a block, and gossip it to peers.
+
 ## Build
 
 ```bash
