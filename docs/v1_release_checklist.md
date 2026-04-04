@@ -23,5 +23,5 @@
 
 ## Release
 - [x] known issues are written down
-- [ ] release candidate version is chosen
+- [x] release candidate version is chosen; `v1.0.0-rc1`
 - [ ] private test plan is ready
