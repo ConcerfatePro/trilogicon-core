@@ -95,3 +95,26 @@ If a rule is painful but necessary for correctness, the rule wins.
 For a valid transfer in V1, the sender’s balance decreases by `amount + fee`, the receiver’s balance increases by `amount`, and **no account gains the `fee`**.
 
 Equivalently: the sum of all account balances decreases by `fee` for each such transaction (assuming no other state changes in the same step). This must remain the documented fee semantics for V1 unless the protocol is explicitly revised.
+
+---
+
+## Automated rejection coverage
+
+These `node` tests name the main adversarial classes for V1 (see also finer-grained tests under each module):
+
+| Adversarial input | Primary test name (`node/src/rejection_matrix_tests.rs`) | Notes |
+|-------------------|----------------------------------------------------------|--------|
+| Bad signature | `v1_rejects_bad_signature` | `Transaction::basic_validate` |
+| Wrong nonce (ahead of expected) | `v1_rejects_wrong_nonce_when_expected_lower` | `State::apply_transaction` |
+| Nonce reuse (replay same tx) | `v1_rejects_nonce_reuse_same_signed_transaction` | After one successful apply |
+| Insufficient balance | `v1_rejects_insufficient_balance` | `State::apply_transaction` |
+| Wrong `previous_hash` | `v1_rejects_wrong_previous_hash_on_append` | `Blockchain::append_block` |
+| Wrong block height | `v1_rejects_wrong_block_height_on_append` | `Blockchain::append_block` |
+| Skipped nonce inside one block | `v1_rejects_second_transaction_in_block_with_skipped_nonce` | Second tx nonce gap after first applies |
+| Malformed tx bytes | `v1_rejects_malformed_transaction_encoding` | `decode_transaction` (truncated) |
+| Malformed block bytes | `v1_rejects_malformed_block_encoding_truncated`, `v1_rejects_malformed_block_encoding_trailing_garbage` | `decode_block` |
+| Timestamp vs parent (`min_block_interval_secs`) | `v1_rejects_block_timestamp_violating_min_interval_after_parent` | `ConsensusParams` on chain |
+| Timestamp vs local clock (`max_future_drift_secs`) | `v1_rejects_block_timestamp_too_far_in_future_vs_local_time_on_network_path` | `try_append_network_block` |
+| Wall-clock helper | `v1_consensus_local_time_rule_documented` | `validate_block_vs_local_time` directly |
+
+Mempool FIFO with wrong nonce ordering is covered by `blockchain::tests::append_block_from_mempool_rejects_wrong_nonce_order_without_draining_pool`.

@@ -1,14 +1,13 @@
-﻿//! Dev CLI: create a wallet, queue signed transfers, run a minimal block producer.
+﻿//! Dev CLI: wallet, protocol genesis, chain dir, mempool, optional P2P.
 //!
 //! ```text
-//! cargo run -p node -- init [--data-dir DIR]
-//! cargo run -p node -- run [--data-dir DIR] [--interval-secs SECS]
-//!   [--listen HOST:PORT] [--peers A,B] [--max-future-drift-secs N]
-//! cargo run -p node -- send [--data-dir DIR] RECEIVER AMOUNT [FEE]
+//! cargo run -p node -- init [--data-dir DIR] [--genesis-balance N]
+//! cargo run -p node -- run [--data-dir DIR] [--genesis PATH] [--interval-secs SECS]
+//!   [--listen HOST:PORT] [--peers HOST:PORT,...] [--max-future-drift-secs N]
+//! cargo run -p node -- send [--data-dir DIR] [--genesis PATH] RECEIVER AMOUNT [FEE]
 //! ```
 //!
-//! `send` writes to `pending_tx.tril`; `run` ingests that file into the mempool and seals blocks.
-//! Chain frames go to `chain.blocks`. `wallet.seed` holds 32 raw bytes (back it up).
+//! Default genesis path: `{data-dir}/genesis.toml`. Use `init --genesis-balance` to create it.
 
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -17,11 +16,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use node::blockchain::Blockchain;
 use node::encoding::{decode_transaction, encode_transaction};
+use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::NodeInner;
-use node::storage::{load_blockchain_from_disk_with, BlockStore};
+use node::storage::{load_blockchain_from_disk, BlockStore};
 use node::transaction::Transaction;
 use node::types::Address;
 use node::wallet::Wallet;
@@ -29,20 +28,20 @@ use node::wallet::Wallet;
 const WALLET_FILE: &str = "wallet.seed";
 const CHAIN_FILE: &str = "chain.blocks";
 const PENDING_TX_FILE: &str = "pending_tx.tril";
-/// Idempotent dev funding so a fresh wallet can pay fees without a genesis-state file yet.
-const DEV_BOOTSTRAP_BALANCE: u64 = 1_000_000;
+const GENESIS_FILE: &str = "genesis.toml";
 const DEFAULT_INTERVAL_SECS: u64 = 2;
 const MAX_PENDING_TX_FRAME: u32 = 4 * 1024 * 1024;
 
 fn usage(bin: &str) {
     eprintln!(
         "Usage:
-  {bin} init [--data-dir DIR]
-  {bin} run [--data-dir DIR] [--interval-secs SECS]
+  {bin} init [--data-dir DIR] [--genesis-balance N]
+  {bin} run [--data-dir DIR] [--genesis PATH] [--interval-secs SECS]
           [--listen HOST:PORT] [--peers HOST:PORT,...] [--max-future-drift-secs N]
-  {bin} send [--data-dir DIR] RECEIVER AMOUNT [FEE]
+  {bin} send [--data-dir DIR] [--genesis PATH] RECEIVER AMOUNT [FEE]
 
-Files under DIR (default \".\"): {WALLET_FILE}, {CHAIN_FILE}, {PENDING_TX_FILE}"
+Genesis: default {GENESIS_FILE} under --data-dir. init --genesis-balance writes it for the new wallet.
+Files: {WALLET_FILE}, {CHAIN_FILE}, {PENDING_TX_FILE}, {GENESIS_FILE}"
     );
 }
 
@@ -53,10 +52,21 @@ fn unix_now_secs() -> u64 {
         .as_secs()
 }
 
-fn dev_bootstrap(wallet: &Wallet, chain: &mut Blockchain) {
-    chain
-        .state_mut()
-        .create_account(wallet.address(), DEV_BOOTSTRAP_BALANCE);
+fn resolve_genesis_path(data_dir: &Path, genesis_flag: Option<&str>) -> PathBuf {
+    genesis_flag
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir.join(GENESIS_FILE))
+}
+
+fn load_genesis_for_cmd(data_dir: &Path, genesis_flag: Option<&str>) -> Result<Genesis, String> {
+    let p = resolve_genesis_path(data_dir, genesis_flag);
+    if !p.exists() {
+        return Err(format!(
+            "genesis file not found: {} (use `init --genesis-balance N` or --genesis PATH)",
+            p.display()
+        ));
+    }
+    Genesis::from_path(&p).map_err(|e| format!("{}: {e}", p.display()))
 }
 
 fn load_wallet(data_dir: &Path) -> std::io::Result<Wallet> {
@@ -66,7 +76,7 @@ fn load_wallet(data_dir: &Path) -> std::io::Result<Wallet> {
             std::io::Error::new(
                 ErrorKind::NotFound,
                 format!(
-                    "{}: no wallet here — run `init --data-dir {}` first (same folder as send/run)",
+                    "{}: no wallet here — run `init --data-dir {}` first",
                     path.display(),
                     data_dir.display()
                 ),
@@ -103,7 +113,6 @@ fn append_pending_tx(path: &Path, tx: &Transaction) -> std::io::Result<()> {
     f.sync_all()
 }
 
-/// Read all length-prefixed frames; on success replace file with empty.
 fn drain_pending_txs(path: &Path) -> Result<Vec<Transaction>, String> {
     if !path.exists() {
         return Ok(Vec::new());
@@ -138,8 +147,19 @@ fn drain_pending_txs(path: &Path) -> Result<Vec<Transaction>, String> {
 
 fn parse_run_args(
     args: &[String],
-) -> Result<(PathBuf, u64, Option<String>, Vec<String>, Option<u64>), String> {
+) -> Result<
+    (
+        PathBuf,
+        Option<String>,
+        u64,
+        Option<String>,
+        Vec<String>,
+        Option<u64>,
+    ),
+    String,
+> {
     let mut data_dir = PathBuf::from(".");
+    let mut genesis_path: Option<String> = None;
     let mut interval = DEFAULT_INTERVAL_SECS;
     let mut listen: Option<String> = None;
     let mut peers: Vec<String> = Vec::new();
@@ -152,6 +172,13 @@ fn parse_run_args(
                     .get(i + 1)
                     .ok_or_else(|| "--data-dir needs a value".to_string())?;
                 data_dir = PathBuf::from(v);
+                i += 2;
+            }
+            "--genesis" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--genesis needs a file path".to_string())?;
+                genesis_path = Some(v.clone());
                 i += 2;
             }
             "--interval-secs" => {
@@ -199,6 +226,7 @@ fn parse_run_args(
     }
     Ok((
         data_dir,
+        genesis_path,
         interval,
         listen,
         peers,
@@ -206,27 +234,69 @@ fn parse_run_args(
     ))
 }
 
-/// Parses `--data-dir` and leaves remaining positional strings.
-fn parse_dir_and_positionals(args: &[String]) -> Result<(PathBuf, Vec<String>), String> {
+fn parse_init_args(args: &[String]) -> Result<(PathBuf, Option<u64>), String> {
     let mut data_dir = PathBuf::from(".");
+    let mut genesis_balance: Option<u64> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--data-dir" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--data-dir needs a value".to_string())?;
+                data_dir = PathBuf::from(v);
+                i += 2;
+            }
+            "--genesis-balance" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--genesis-balance needs a u64".to_string())?;
+                genesis_balance = Some(
+                    v.parse()
+                        .map_err(|_| "--genesis-balance must be a u64".to_string())?,
+                );
+                if genesis_balance == Some(0) {
+                    return Err("--genesis-balance must be > 0".into());
+                }
+                i += 2;
+            }
+            other => return Err(format!("unknown flag: {other}")),
+        }
+    }
+    Ok((data_dir, genesis_balance))
+}
+
+fn parse_send_args(args: &[String]) -> Result<(PathBuf, Option<String>, Vec<String>), String> {
+    let mut data_dir = PathBuf::from(".");
+    let mut genesis_path: Option<String> = None;
     let mut rest = Vec::new();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--data-dir" {
-            let v = args
-                .get(i + 1)
-                .ok_or_else(|| "--data-dir needs a value".to_string())?;
-            data_dir = PathBuf::from(v);
-            i += 2;
-        } else {
-            rest.push(args[i].clone());
-            i += 1;
+        match args[i].as_str() {
+            "--data-dir" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--data-dir needs a value".to_string())?;
+                data_dir = PathBuf::from(v);
+                i += 2;
+            }
+            "--genesis" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--genesis needs a file path".to_string())?;
+                genesis_path = Some(v.clone());
+                i += 2;
+            }
+            _ => {
+                rest.push(args[i].clone());
+                i += 1;
+            }
         }
     }
-    Ok((data_dir, rest))
+    Ok((data_dir, genesis_path, rest))
 }
 
-fn cmd_init(data_dir: &Path) -> Result<(), String> {
+fn cmd_init(data_dir: &Path, genesis_balance: Option<u64>) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let path = data_dir.join(WALLET_FILE);
     if path.exists() {
@@ -239,21 +309,50 @@ fn cmd_init(data_dir: &Path) -> Result<(), String> {
     fs::write(&path, w.seed_bytes()).map_err(|e| e.to_string())?;
     println!("Wallet written to {}", path.display());
     println!("Address: {}", w.address());
-    eprintln!("Keep wallet.seed secret; it controls funds on this dev setup.");
+
+    if let Some(bal) = genesis_balance {
+        let gen_path = data_dir.join(GENESIS_FILE);
+        if gen_path.exists() {
+            return Err(format!(
+                "{} already exists; remove it first or omit --genesis-balance",
+                gen_path.display()
+            ));
+        }
+        let g = Genesis {
+            allocations: vec![GenesisAllocation {
+                address: w.address().0.clone(),
+                balance: bal,
+            }],
+        };
+        g.write_to_path(&gen_path)?;
+        let hex = g.state_commitment_hex().map_err(|e| e.to_string())?;
+        println!("Genesis written to {}", gen_path.display());
+        println!("Genesis state commitment: {hex}");
+    }
+
+    eprintln!("Keep wallet.seed secret.");
     Ok(())
 }
 
-fn cmd_send(data_dir: &Path, receiver: &str, amount: u64, fee: u64) -> Result<(), String> {
+fn cmd_send(
+    data_dir: &Path,
+    genesis_flag: Option<&str>,
+    receiver: &str,
+    amount: u64,
+    fee: u64,
+) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let wallet = load_wallet(data_dir).map_err(|e| e.to_string())?;
+    let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     let chain_path = data_dir.join(CHAIN_FILE);
-    let chain = load_blockchain_from_disk_with(&chain_path, |c| dev_bootstrap(&wallet, c))
-        .map_err(|e| e.to_string())?;
+    let chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
     let nonce = chain
         .state()
         .get_account(&wallet.address())
-        .map(|a| a.nonce)
-        .unwrap_or(0);
+        .ok_or_else(|| {
+            "wallet address has no genesis allocation; add it to genesis.toml (same commitment as peers)".to_string()
+        })?
+        .nonce;
     let ts = unix_now_secs();
     let tx = wallet
         .sign_transfer(Address::new(receiver), amount, fee, nonce, ts)
@@ -269,6 +368,7 @@ fn cmd_send(data_dir: &Path, receiver: &str, amount: u64, fee: u64) -> Result<()
 
 fn cmd_run(
     data_dir: &Path,
+    genesis_flag: Option<&str>,
     interval_secs: u64,
     listen: Option<String>,
     peers: Vec<String>,
@@ -276,10 +376,10 @@ fn cmd_run(
 ) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let wallet = load_wallet(data_dir).map_err(|e| e.to_string())?;
+    let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     let chain_path = data_dir.join(CHAIN_FILE);
     let pending_path = data_dir.join(PENDING_TX_FILE);
-    let mut chain = load_blockchain_from_disk_with(&chain_path, |c| dev_bootstrap(&wallet, c))
-        .map_err(|e| e.to_string())?;
+    let mut chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
     if let Some(d) = max_future_drift_secs {
         chain.consensus_params_mut().max_future_drift_secs = d;
     }
@@ -381,18 +481,22 @@ fn run_cli(args: &[String]) -> Result<(), String> {
 
     match args[1].as_str() {
         "init" => {
-            let (dir, rest) = parse_dir_and_positionals(&args[2..])?;
-            if !rest.is_empty() {
-                return Err(format!("unexpected arguments: {}", rest.join(" ")));
-            }
-            cmd_init(&dir)
+            let (dir, genesis_bal) = parse_init_args(&args[2..])?;
+            cmd_init(&dir, genesis_bal)
         }
         "run" => {
-            let (dir, interval, listen, peers, max_future) = parse_run_args(&args[2..])?;
-            cmd_run(&dir, interval, listen, peers, max_future)
+            let (dir, genesis, interval, listen, peers, max_future) = parse_run_args(&args[2..])?;
+            cmd_run(
+                &dir,
+                genesis.as_deref(),
+                interval,
+                listen,
+                peers,
+                max_future,
+            )
         }
         "send" => {
-            let (dir, rest) = parse_dir_and_positionals(&args[2..])?;
+            let (dir, genesis, rest) = parse_send_args(&args[2..])?;
             if rest.len() < 2 {
                 return Err("send: need RECEIVER AMOUNT [FEE]".into());
             }
@@ -407,7 +511,7 @@ fn run_cli(args: &[String]) -> Result<(), String> {
             } else {
                 1
             };
-            cmd_send(&dir, &receiver, amount, fee)
+            cmd_send(&dir, genesis.as_deref(), &receiver, amount, fee)
         }
         _ => {
             usage(bin);

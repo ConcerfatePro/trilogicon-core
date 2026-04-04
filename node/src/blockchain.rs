@@ -3,6 +3,7 @@ use crate::consensus::{
     validate_block_timestamps_vs_parent, validate_block_vs_local_time, ConsensusParams,
 };
 use crate::errors::ProtocolError;
+use crate::genesis::Genesis;
 use crate::mempool::Mempool;
 use crate::state::State;
 
@@ -29,21 +30,34 @@ impl Blockchain {
         &self.blocks
     }
 
+    /// Empty genesis allocations (no accounts). Prefer [`Self::from_genesis`] for real networks.
     pub fn new() -> Self {
-        Self {
-            blocks: vec![Block::genesis()],
-            state: State::new(),
-            consensus: ConsensusParams::default(),
-        }
+        Self::from_genesis(&Genesis::empty()).expect("empty genesis is valid")
     }
 
-    /// Same as [`Self::new`], but with explicit consensus timestamp policy (testnets, simulations).
-    pub fn with_consensus_params(consensus: ConsensusParams) -> Self {
-        Self {
+    /// Build chain with genesis block + initial [`State`] from `genesis` allocations.
+    pub fn from_genesis(genesis: &Genesis) -> Result<Self, ProtocolError> {
+        let state = State::from_genesis(genesis)?;
+        Ok(Self {
             blocks: vec![Block::genesis()],
-            state: State::new(),
-            consensus,
-        }
+            state,
+            consensus: ConsensusParams::default(),
+        })
+    }
+
+    /// Same as [`Self::from_genesis`] with explicit consensus timestamp policy.
+    pub fn from_genesis_with_consensus(
+        genesis: &Genesis,
+        consensus: ConsensusParams,
+    ) -> Result<Self, ProtocolError> {
+        let mut c = Self::from_genesis(genesis)?;
+        c.consensus = consensus;
+        Ok(c)
+    }
+
+    /// Empty genesis + explicit consensus (unit tests).
+    pub fn with_consensus_params(consensus: ConsensusParams) -> Self {
+        Self::from_genesis_with_consensus(&Genesis::empty(), consensus).expect("valid")
     }
 
     pub fn consensus_params(&self) -> &ConsensusParams {
@@ -309,126 +323,127 @@ mod tests {
         assert_eq!(chain.height(), 0);
         assert_eq!(chain.len(), 1);
     }
+
     #[test]
-fn append_block_applies_state_updates_for_valid_block() {
-    let mut chain = Blockchain::new();
+    fn append_block_applies_state_updates_for_valid_block() {
+        let mut chain = Blockchain::new();
 
-    let signing_key = SigningKey::from_bytes(&[31u8; 32]);
-    let verifying_key = signing_key.verifying_key();
-    let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
-    let receiver_addr = Address::new("receiver_state_apply");
+        let signing_key = SigningKey::from_bytes(&[31u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let receiver_addr = Address::new("receiver_state_apply");
 
-    chain.state_mut().create_account(sender_addr.clone(), 100);
+        chain.state_mut().create_account(sender_addr.clone(), 100);
 
-    let mut tx = Transaction {
-        sender: sender_addr.clone(),
-        receiver: receiver_addr.clone(),
-        amount: 10,
-        fee: 1,
-        nonce: 0,
-        timestamp_unix: 1_700_002_000,
-        public_key: verifying_key.to_bytes().to_vec(),
-        signature: Vec::new(),
-        tx_hash: String::new(),
-    };
-    let payload = tx.unsigned_payload_bytes();
-    tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
-    tx.tx_hash = Crypto::hash_bytes(&payload);
+        let mut tx = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_addr.clone(),
+            amount: 10,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_002_000,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = seal_block(Block {
-        height: 1,
-        previous_hash: "GENESIS_HASH".to_string(),
-        timestamp_unix: 1_700_002_001,
-        transactions: vec![tx],
-        block_hash: String::new(),
-    });
+        let block = seal_block(Block {
+            height: 1,
+            previous_hash: "GENESIS_HASH".to_string(),
+            timestamp_unix: 1_700_002_001,
+            transactions: vec![tx],
+            block_hash: String::new(),
+        });
 
-    assert!(chain.append_block(block).is_ok());
-    assert_eq!(chain.height(), 1);
+        assert!(chain.append_block(block).is_ok());
+        assert_eq!(chain.height(), 1);
 
-    let sender = chain.state().get_account(&sender_addr).unwrap();
-    let receiver = chain.state().get_account(&receiver_addr).unwrap();
-    assert_eq!(sender.balance, 89);
-    assert_eq!(sender.nonce, 1);
-    assert_eq!(receiver.balance, 10);
-}
+        let sender = chain.state().get_account(&sender_addr).unwrap();
+        let receiver = chain.state().get_account(&receiver_addr).unwrap();
+        assert_eq!(sender.balance, 89);
+        assert_eq!(sender.nonce, 1);
+        assert_eq!(receiver.balance, 10);
+    }
 
-#[test]
-fn append_block_rejects_when_tx_fails_state_rules() {
-    let mut chain = Blockchain::new();
+    #[test]
+    fn append_block_rejects_when_tx_fails_state_rules() {
+        let mut chain = Blockchain::new();
 
-    let signing_key = SigningKey::from_bytes(&[32u8; 32]);
-    let verifying_key = signing_key.verifying_key();
-    let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
-    let receiver_addr = Address::new("receiver_state_fail");
+        let signing_key = SigningKey::from_bytes(&[32u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let receiver_addr = Address::new("receiver_state_fail");
 
-    chain.state_mut().create_account(sender_addr.clone(), 5);
+        chain.state_mut().create_account(sender_addr.clone(), 5);
 
-    let mut tx = Transaction {
-        sender: sender_addr.clone(),
-        receiver: receiver_addr.clone(),
-        amount: 10, // exceeds balance
-        fee: 1,
-        nonce: 0,
-        timestamp_unix: 1_700_002_010,
-        public_key: verifying_key.to_bytes().to_vec(),
-        signature: Vec::new(),
-        tx_hash: String::new(),
-    };
-    let payload = tx.unsigned_payload_bytes();
-    tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
-    tx.tx_hash = Crypto::hash_bytes(&payload);
+        let mut tx = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_addr.clone(),
+            amount: 10, // exceeds balance
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_002_010,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = seal_block(Block {
-        height: 1,
-        previous_hash: "GENESIS_HASH".to_string(),
-        timestamp_unix: 1_700_002_011,
-        transactions: vec![tx],
-        block_hash: String::new(),
-    });
+        let block = seal_block(Block {
+            height: 1,
+            previous_hash: "GENESIS_HASH".to_string(),
+            timestamp_unix: 1_700_002_011,
+            transactions: vec![tx],
+            block_hash: String::new(),
+        });
 
-    let result = chain.append_block(block);
-    assert!(matches!(result, Err(ProtocolError::InsufficientBalance)));
-}
+        let result = chain.append_block(block);
+        assert!(matches!(result, Err(ProtocolError::InsufficientBalance)));
+    }
 
-#[test]
-fn append_block_does_not_advance_height_on_state_failure() {
-    let mut chain = Blockchain::new();
+    #[test]
+    fn append_block_does_not_advance_height_on_state_failure() {
+        let mut chain = Blockchain::new();
 
-    let signing_key = SigningKey::from_bytes(&[33u8; 32]);
-    let verifying_key = signing_key.verifying_key();
-    let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
-    let receiver_addr = Address::new("receiver_height_guard");
+        let signing_key = SigningKey::from_bytes(&[33u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let receiver_addr = Address::new("receiver_height_guard");
 
-    chain.state_mut().create_account(sender_addr.clone(), 1);
+        chain.state_mut().create_account(sender_addr.clone(), 1);
 
-    let mut tx = Transaction {
-        sender: sender_addr.clone(),
-        receiver: receiver_addr,
-        amount: 5, // invalid by balance
-        fee: 1,
-        nonce: 0,
-        timestamp_unix: 1_700_002_020,
-        public_key: verifying_key.to_bytes().to_vec(),
-        signature: Vec::new(),
-        tx_hash: String::new(),
-    };
-    let payload = tx.unsigned_payload_bytes();
-    tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
-    tx.tx_hash = Crypto::hash_bytes(&payload);
+        let mut tx = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_addr,
+            amount: 5, // invalid by balance
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_002_020,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = seal_block(Block {
-        height: 1,
-        previous_hash: "GENESIS_HASH".to_string(),
-        timestamp_unix: 1_700_002_021,
-        transactions: vec![tx],
-        block_hash: String::new(),
-    });
+        let block = seal_block(Block {
+            height: 1,
+            previous_hash: "GENESIS_HASH".to_string(),
+            timestamp_unix: 1_700_002_021,
+            transactions: vec![tx],
+            block_hash: String::new(),
+        });
 
-    assert!(chain.append_block(block).is_err());
-    assert_eq!(chain.height(), 0);
-    assert_eq!(chain.len(), 1);
-}
+        assert!(chain.append_block(block).is_err());
+        assert_eq!(chain.height(), 0);
+        assert_eq!(chain.len(), 1);
+    }
 
     #[test]
     fn append_block_rejects_mid_block_failure_without_partial_state() {
@@ -574,5 +589,73 @@ fn append_block_does_not_advance_height_on_state_failure() {
             .is_err());
         assert_eq!(chain.height(), 0);
         assert_eq!(pool.len(), 1);
+    }
+
+    /// Mempool is FIFO: if nonce-1 is queued before nonce-0, sealing fails and the pool is unchanged.
+    #[test]
+    fn append_block_from_mempool_rejects_wrong_nonce_order_without_draining_pool() {
+        let mut chain = Blockchain::new();
+        let mut pool = Mempool::new(10);
+
+        let signing_key = SigningKey::from_bytes(&[52u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let r1 = Address::new("recv_nonce_order_1");
+        let r0 = Address::new("recv_nonce_order_0");
+
+        chain.state_mut().create_account(sender_addr.clone(), 100);
+
+        let mut tx_nonce1 = Transaction {
+            sender: sender_addr.clone(),
+            receiver: r1.clone(),
+            amount: 1,
+            fee: 1,
+            nonce: 1,
+            timestamp_unix: 1_700_005_000,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let p1 = tx_nonce1.unsigned_payload_bytes();
+        tx_nonce1.signature = signing_key.sign(&p1).to_bytes().to_vec();
+        tx_nonce1.tx_hash = Crypto::hash_bytes(&p1);
+
+        let mut tx_nonce0 = Transaction {
+            sender: sender_addr.clone(),
+            receiver: r0,
+            amount: 1,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_005_001,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let p0 = tx_nonce0.unsigned_payload_bytes();
+        tx_nonce0.signature = signing_key.sign(&p0).to_bytes().to_vec();
+        tx_nonce0.tx_hash = Crypto::hash_bytes(&p0);
+
+        pool.try_submit(tx_nonce1).unwrap();
+        pool.try_submit(tx_nonce0).unwrap();
+        assert_eq!(pool.len(), 2);
+
+        assert!(matches!(
+            chain.append_block_from_mempool(&mut pool, 8, 1_700_005_002),
+            Err(ProtocolError::InvalidNonce)
+        ));
+        assert_eq!(chain.height(), 0);
+        assert_eq!(pool.len(), 2);
+    }
+
+    #[test]
+    fn try_append_network_block_accepts_valid_block_when_future_drift_unbounded() {
+        let mut chain = Blockchain::new();
+        let prev_hash = "GENESIS_HASH".to_string();
+        let block = valid_block_1(prev_hash);
+        let sender = block.transactions[0].sender.clone();
+        chain.state_mut().create_account(sender, 100);
+        let now = 1u64;
+        assert!(chain.try_append_network_block(block, now).is_ok());
+        assert_eq!(chain.height(), 1);
     }
 }

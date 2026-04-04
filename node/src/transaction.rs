@@ -143,4 +143,11 @@ mod tests {
         tx.sender = Address::new("not_the_derived_address");
         assert!(tx.basic_validate().is_err());
     }
+
+    #[test]
+    fn basic_validate_rejects_zero_amount() {
+        let mut tx = sample_tx();
+        tx.amount = 0;
+        assert!(matches!(tx.basic_validate(), Err(ProtocolError::InvalidAmount)));
+    }
 }

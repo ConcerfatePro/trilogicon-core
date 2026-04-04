@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::errors::ProtocolError;
+use crate::genesis::Genesis;
 use crate::transaction::Transaction;
 use crate::types::{Account, Address};
 
@@ -14,6 +15,28 @@ impl State {
         Self {
             accounts: HashMap::new(),
         }
+    }
+
+    /// Height-0 state from protocol genesis (sorted allocations, no duplicates).
+    pub fn from_genesis(genesis: &Genesis) -> Result<Self, ProtocolError> {
+        let pairs = genesis.sorted_pairs()?;
+        let mut state = Self::new();
+        for (addr, balance) in pairs {
+            let key = addr.clone();
+            state.accounts.insert(key, Account::new(addr, balance));
+        }
+        Ok(state)
+    }
+
+    /// Deterministic account list for tests and debugging (`address` ascending).
+    pub fn accounts_sorted(&self) -> Vec<(Address, Account)> {
+        let mut v: Vec<_> = self
+            .accounts
+            .iter()
+            .map(|(a, ac)| (a.clone(), ac.clone()))
+            .collect();
+        v.sort_by(|x, y| x.0 .0.cmp(&y.0 .0));
+        v
     }
 
     pub fn account_count(&self) -> usize {
@@ -207,5 +230,27 @@ mod tests {
         let tx = make_signed_tx(&signing_key, receiver_addr, 1, 1, 0, 1_700_000_003);
         let result = state.apply_transaction(&tx);
         assert!(matches!(result, Err(ProtocolError::StateError(_))));
+    }
+
+    #[test]
+    fn apply_transaction_rejects_replay_same_signed_tx() {
+        let signing_key = SigningKey::from_bytes(&[12u8; 32]);
+        let sender_vk = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&sender_vk.to_bytes()));
+        let receiver_addr = Address::new("receiver_replay");
+
+        let mut state = State::new();
+        state.create_account(sender_addr.clone(), 100);
+
+        let tx = make_signed_tx(&signing_key, receiver_addr.clone(), 5, 1, 0, 1_700_000_500);
+        state.apply_transaction(&tx).unwrap();
+
+        let replay = state.apply_transaction(&tx);
+        assert!(matches!(replay, Err(ProtocolError::InvalidNonce)));
+
+        let sender = state.get_account(&sender_addr).unwrap();
+        assert_eq!(sender.nonce, 1);
+        assert_eq!(sender.balance, 94);
+        assert_eq!(state.get_account(&receiver_addr).unwrap().balance, 5);
     }
 }

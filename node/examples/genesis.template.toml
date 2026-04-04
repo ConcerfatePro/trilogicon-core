@@ -1,0 +1,10 @@
+# Copy to genesis.toml and set addresses (hex from SHA256(pubkey) in this codebase).
+# Every node in the same network must use the same file (compare state commitment).
+
+[[allocations]]
+address = "replace_with_recipient_address_string"
+balance = 1000000
+
+# [[allocations]]
+# address = "second_party_address"
+# balance = 1000000

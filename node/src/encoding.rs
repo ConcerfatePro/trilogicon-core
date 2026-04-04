@@ -258,4 +258,54 @@ mod tests {
         assert_eq!(block.block_hash, back.block_hash);
         assert!(back.basic_validate().is_ok());
     }
+
+    #[test]
+    fn decode_transaction_rejects_bad_magic() {
+        let mut bad = encode_transaction(&sample_tx());
+        bad[0] ^= 0xFF;
+        assert!(decode_transaction(&bad).is_err());
+    }
+
+    #[test]
+    fn decode_transaction_rejects_truncated_input() {
+        assert!(decode_transaction(&[]).is_err());
+        assert!(decode_transaction(b"TRT").is_err());
+    }
+
+    #[test]
+    fn decode_transaction_rejects_trailing_bytes() {
+        let mut bytes = encode_transaction(&sample_tx());
+        bytes.push(0);
+        assert!(decode_transaction(&bytes).is_err());
+    }
+
+    #[test]
+    fn decode_block_rejects_bad_magic() {
+        let mut block = Block {
+            height: 1,
+            previous_hash: "p".into(),
+            timestamp_unix: 1,
+            transactions: vec![sample_tx()],
+            block_hash: String::new(),
+        };
+        block.block_hash = block.compute_block_hash();
+        let mut bytes = encode_block(&block);
+        bytes[1] ^= 0xFF;
+        assert!(decode_block(&bytes).is_err());
+    }
+
+    /// Smoke property: random bytes must never panic `decode_*` (only `Result`).
+    #[test]
+    fn decode_random_inputs_do_not_panic() {
+        use rand::RngCore;
+
+        let mut rng = rand::thread_rng();
+        let mut buf = [0u8; 384];
+        for _ in 0..2500 {
+            rng.fill_bytes(&mut buf);
+            let _ = decode_transaction(&buf);
+            let n = usize::from(buf[1]) % buf.len() + 1;
+            let _ = decode_block(&buf[..n]);
+        }
+    }
 }

@@ -20,7 +20,7 @@ impl fmt::Display for Address {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {
     pub address: Address,
     pub balance: u64,
