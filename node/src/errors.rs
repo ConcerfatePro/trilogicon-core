@@ -1,4 +1,4 @@
-﻿use std::error::Error;
+use std::error::Error;
 use std::fmt;
 
 #[derive(Debug)]
@@ -11,6 +11,10 @@ pub enum ProtocolError {
     SignatureInvalid,
     InvalidBlock(String),
     StateError(String),
+    /// Mempool already holds this transaction id.
+    DuplicateTransaction,
+    /// Mempool has reached its configured capacity.
+    MempoolFull,
 }
 
 impl fmt::Display for ProtocolError {
@@ -24,6 +28,8 @@ impl fmt::Display for ProtocolError {
             Self::SignatureInvalid => write!(f, "signature invalid"),
             Self::InvalidBlock(msg) => write!(f, "invalid block: {msg}"),
             Self::StateError(msg) => write!(f, "state error: {msg}"),
+            Self::DuplicateTransaction => write!(f, "duplicate transaction"),
+            Self::MempoolFull => write!(f, "mempool full"),
         }
     }
 }

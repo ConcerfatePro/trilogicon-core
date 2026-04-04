@@ -30,6 +30,15 @@ impl State {
             .or_insert_with(|| Account::new(address, initial_balance));
     }
 
+    /// Sum of all account balances. Used for supply audits; uses checked arithmetic.
+    pub fn total_balance_sum(&self) -> Result<u64, ProtocolError> {
+        self.accounts.values().try_fold(0u64, |acc, a| {
+            acc.checked_add(a.balance).ok_or_else(|| {
+                ProtocolError::StateError(String::from("total balance sum overflow"))
+            })
+        })
+    }
+
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), ProtocolError> {
         tx.basic_validate()?;
 
@@ -59,6 +68,8 @@ impl State {
             .entry(tx.receiver.clone())
             .or_insert_with(|| Account::new(tx.receiver.clone(), 0));
         receiver.balance += tx.amount;
+
+        // V1: `fee` is burned (deducted from sender, not credited to any account).
 
         Ok(())
     }
@@ -98,6 +109,31 @@ mod tests {
         tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
         tx.tx_hash = Crypto::hash_bytes(&payload);
         tx
+    }
+
+    #[test]
+    fn apply_transaction_reduces_total_supply_by_fee() {
+        let signing_key = SigningKey::from_bytes(&[11u8; 32]);
+        let sender_vk = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&sender_vk.to_bytes()));
+        let receiver_addr = Address::new("receiver_supply");
+
+        let mut state = State::new();
+        state.create_account(sender_addr.clone(), 100);
+
+        let before = state.total_balance_sum().unwrap();
+        let tx = make_signed_tx(&signing_key, receiver_addr.clone(), 10, 3, 0, 1_700_000_100);
+        state.apply_transaction(&tx).unwrap();
+        let after = state.total_balance_sum().unwrap();
+
+        assert_eq!(before, 100);
+        assert_eq!(after, 97); // 100 - fee 3; receiver gained 10, sender lost 13
+        assert_eq!(
+            after,
+            before
+                .checked_sub(tx.fee)
+                .expect("fee <= before for this fixture")
+        );
     }
 
     #[test]

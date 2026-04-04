@@ -1,10 +1,15 @@
 use crate::block::Block;
+use crate::consensus::{
+    validate_block_timestamps_vs_parent, validate_block_vs_local_time, ConsensusParams,
+};
 use crate::errors::ProtocolError;
+use crate::mempool::Mempool;
 use crate::state::State;
 
 pub struct Blockchain {
     blocks: Vec<Block>,
     state: State,
+    consensus: ConsensusParams,
 }
 
 impl Blockchain {
@@ -20,11 +25,56 @@ impl Blockchain {
         self.blocks.len()
     }
 
+    pub fn blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
     pub fn new() -> Self {
         Self {
             blocks: vec![Block::genesis()],
             state: State::new(),
+            consensus: ConsensusParams::default(),
         }
+    }
+
+    /// Same as [`Self::new`], but with explicit consensus timestamp policy (testnets, simulations).
+    pub fn with_consensus_params(consensus: ConsensusParams) -> Self {
+        Self {
+            blocks: vec![Block::genesis()],
+            state: State::new(),
+            consensus,
+        }
+    }
+
+    pub fn consensus_params(&self) -> &ConsensusParams {
+        &self.consensus
+    }
+
+    pub fn consensus_params_mut(&mut self) -> &mut ConsensusParams {
+        &mut self.consensus
+    }
+
+    /// Blocks with `height >= start_height` (genesis is `0`). Used for catch-up replies.
+    pub fn blocks_from_height(&self, start_height: u64) -> Vec<Block> {
+        self.blocks
+            .iter()
+            .filter(|b| b.height >= start_height)
+            .cloned()
+            .collect()
+    }
+
+    /// Network ingress path: reject blocks too far in the future vs `now_unix`, then full append.
+    pub fn try_append_network_block(
+        &mut self,
+        block: Block,
+        now_unix: u64,
+    ) -> Result<(), ProtocolError> {
+        validate_block_vs_local_time(
+            block.timestamp_unix,
+            now_unix,
+            self.consensus.max_future_drift_secs,
+        )?;
+        self.append_block(block)
     }
 
     pub fn height(&self) -> u64 {
@@ -50,7 +100,9 @@ impl Blockchain {
                 "invalid previous hash",
             )));
         }
-    
+
+        validate_block_timestamps_vs_parent(tip, &block, &self.consensus)?;
+
         // Apply all transactions atomically: clone state, apply on the copy,
         // commit only if every tx succeeds (no partial block effects).
         let mut next_state = self.state.clone();
@@ -62,14 +114,66 @@ impl Blockchain {
         self.blocks.push(block);
         Ok(())
     }
+
+    /// Take up to `max_transactions` from the mempool (FIFO order), build a sealed block on
+    /// the current tip, and append it. On success, removes those transactions from the mempool.
+    ///
+    /// Returns how many transactions were committed. If the mempool has no candidates, returns
+    /// `Ok(0)` and leaves the chain unchanged.
+    ///
+    /// If `append_block` fails (e.g. insufficient balance), the mempool is unchanged so callers
+    /// can add eviction or revalidation policy later.
+    pub fn append_block_from_mempool(
+        &mut self,
+        mempool: &mut Mempool,
+        max_transactions: usize,
+        timestamp_unix: u64,
+    ) -> Result<usize, ProtocolError> {
+        let txs = mempool.ordered_candidates(max_transactions);
+        if txs.is_empty() {
+            return Ok(0);
+        }
+
+        let tip = self
+            .blocks
+            .last()
+            .ok_or_else(|| ProtocolError::StateError(String::from("chain tip missing")))?;
+
+        let mut block = Block {
+            height: tip.height + 1,
+            previous_hash: tip.block_hash.clone(),
+            timestamp_unix,
+            transactions: txs,
+            block_hash: String::new(),
+        };
+        block.block_hash = block.compute_block_hash();
+
+        let hashes: Vec<String> = block
+            .transactions
+            .iter()
+            .map(|t| t.tx_hash.clone())
+            .collect();
+
+        self.append_block(block)?;
+        mempool.remove_by_tx_hashes(hashes.iter().map(|s| s.as_str()));
+        Ok(hashes.len())
+    }
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::ConsensusParams;
     use crate::crypto::Crypto;
+    use crate::mempool::Mempool;
     use crate::transaction::Transaction;
     use crate::types::Address;
     use ed25519_dalek::{Signer, SigningKey};
+
+    /// Set `block_hash` from canonical preimage (must call after txs are fully valid).
+    fn seal_block(mut block: Block) -> Block {
+        block.block_hash = block.compute_block_hash();
+        block
+    }
 
     fn sample_valid_tx() -> Transaction {
         let signing_key = SigningKey::from_bytes(&[21u8; 32]);
@@ -94,13 +198,46 @@ mod tests {
     }
 
     fn valid_block_1(prev_hash: String) -> Block {
-        Block {
+        seal_block(Block {
             height: 1,
             previous_hash: prev_hash,
             timestamp_unix: 1_700_001_001,
             transactions: vec![sample_valid_tx()],
-            block_hash: "block_1_hash".to_string(),
-        }
+            block_hash: String::new(),
+        })
+    }
+
+    #[test]
+    fn try_append_network_block_rejects_too_far_future() {
+        let mut chain = Blockchain::new();
+        chain.consensus_params_mut().max_future_drift_secs = 60;
+        let mut b = valid_block_1("GENESIS_HASH".into());
+        b.timestamp_unix = 2_000_000_000;
+        b.block_hash = b.compute_block_hash();
+        let acc = b.transactions[0].sender.clone();
+        chain.state_mut().create_account(acc, 100);
+        let now = 1_000_000_000u64;
+        let r = chain.try_append_network_block(b, now);
+        assert!(matches!(r, Err(ProtocolError::InvalidBlock(_))));
+    }
+
+    #[test]
+    fn append_block_rejects_timestamp_under_min_interval() {
+        // Genesis time is 0; fixture block uses 1_700_001_001 — require a higher floor than that.
+        let mut chain = Blockchain::with_consensus_params(ConsensusParams {
+            min_block_interval_secs: 2_000_000_000,
+            max_future_drift_secs: u64::MAX,
+        });
+        let prev_hash = "GENESIS_HASH".to_string();
+        let block = valid_block_1(prev_hash);
+        let sender = block.transactions[0].sender.clone();
+        chain.state_mut().create_account(sender, 100);
+
+        assert!(matches!(
+            chain.append_block(block),
+            Err(ProtocolError::InvalidBlock(_))
+        ));
+        assert_eq!(chain.height(), 0);
     }
 
     #[test]
@@ -121,13 +258,13 @@ mod tests {
     #[test]
     fn append_block_rejects_invalid_height() {
         let mut chain = Blockchain::new();
-        let block = Block {
+        let block = seal_block(Block {
             height: 2, // should be 1
             previous_hash: "GENESIS_HASH".to_string(),
             timestamp_unix: 1_700_001_002,
             transactions: vec![sample_valid_tx()],
-            block_hash: "bad_height_block".to_string(),
-        };
+            block_hash: String::new(),
+        });
 
         let result = chain.append_block(block);
         assert!(matches!(result, Err(ProtocolError::InvalidBlock(_))));
@@ -138,13 +275,13 @@ mod tests {
     #[test]
     fn append_block_rejects_invalid_previous_hash() {
         let mut chain = Blockchain::new();
-        let block = Block {
+        let block = seal_block(Block {
             height: 1,
             previous_hash: "WRONG_HASH".to_string(),
             timestamp_unix: 1_700_001_003,
             transactions: vec![sample_valid_tx()],
-            block_hash: "bad_prev_hash_block".to_string(),
-        };
+            block_hash: String::new(),
+        });
 
         let result = chain.append_block(block);
         assert!(matches!(result, Err(ProtocolError::InvalidBlock(_))));
@@ -198,13 +335,13 @@ fn append_block_applies_state_updates_for_valid_block() {
     tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
     tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = Block {
+    let block = seal_block(Block {
         height: 1,
         previous_hash: "GENESIS_HASH".to_string(),
         timestamp_unix: 1_700_002_001,
         transactions: vec![tx],
-        block_hash: "state_apply_block".to_string(),
-    };
+        block_hash: String::new(),
+    });
 
     assert!(chain.append_block(block).is_ok());
     assert_eq!(chain.height(), 1);
@@ -242,13 +379,13 @@ fn append_block_rejects_when_tx_fails_state_rules() {
     tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
     tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = Block {
+    let block = seal_block(Block {
         height: 1,
         previous_hash: "GENESIS_HASH".to_string(),
         timestamp_unix: 1_700_002_011,
         transactions: vec![tx],
-        block_hash: "state_fail_block".to_string(),
-    };
+        block_hash: String::new(),
+    });
 
     let result = chain.append_block(block);
     assert!(matches!(result, Err(ProtocolError::InsufficientBalance)));
@@ -280,13 +417,13 @@ fn append_block_does_not_advance_height_on_state_failure() {
     tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
     tx.tx_hash = Crypto::hash_bytes(&payload);
 
-    let block = Block {
+    let block = seal_block(Block {
         height: 1,
         previous_hash: "GENESIS_HASH".to_string(),
         timestamp_unix: 1_700_002_021,
         transactions: vec![tx],
-        block_hash: "height_guard_block".to_string(),
-    };
+        block_hash: String::new(),
+    });
 
     assert!(chain.append_block(block).is_err());
     assert_eq!(chain.height(), 0);
@@ -335,13 +472,13 @@ fn append_block_does_not_advance_height_on_state_failure() {
         tx2.signature = signing_key.sign(&p2).to_bytes().to_vec();
         tx2.tx_hash = Crypto::hash_bytes(&p2);
 
-        let block = Block {
+        let block = seal_block(Block {
             height: 1,
             previous_hash: "GENESIS_HASH".to_string(),
             timestamp_unix: 1_700_003_002,
             transactions: vec![tx1, tx2],
-            block_hash: "atomic_fail_block".to_string(),
-        };
+            block_hash: String::new(),
+        });
 
         assert!(matches!(
             chain.append_block(block),
@@ -354,5 +491,88 @@ fn append_block_does_not_advance_height_on_state_failure() {
         assert_eq!(sender.balance, 20);
         assert_eq!(sender.nonce, 0);
         assert!(chain.state().get_account(&receiver_a).is_none());
+    }
+
+    #[test]
+    fn append_block_from_mempool_empty_returns_zero() {
+        let mut chain = Blockchain::new();
+        let mut pool = Mempool::new(10);
+        assert_eq!(
+            chain
+                .append_block_from_mempool(&mut pool, 8, 1_700_004_000)
+                .unwrap(),
+            0
+        );
+        assert_eq!(chain.height(), 0);
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn append_block_from_mempool_commits_and_drains() {
+        let mut chain = Blockchain::new();
+        let mut pool = Mempool::new(10);
+
+        let signing_key = SigningKey::from_bytes(&[50u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let receiver_addr = Address::new("mempool_block_recv");
+
+        chain.state_mut().create_account(sender_addr.clone(), 50);
+
+        let mut tx = Transaction {
+            sender: sender_addr.clone(),
+            receiver: receiver_addr.clone(),
+            amount: 5,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_004_001,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
+
+        pool.try_submit(tx).unwrap();
+        let n = chain
+            .append_block_from_mempool(&mut pool, 8, 1_700_004_002)
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(chain.height(), 1);
+        assert!(pool.is_empty());
+        assert_eq!(chain.state().get_account(&sender_addr).unwrap().balance, 44);
+        assert_eq!(chain.state().get_account(&receiver_addr).unwrap().balance, 5);
+    }
+
+    #[test]
+    fn append_block_from_mempool_failure_keeps_mempool() {
+        let mut chain = Blockchain::new();
+        let mut pool = Mempool::new(10);
+
+        let signing_key = SigningKey::from_bytes(&[51u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+
+        let mut tx = Transaction {
+            sender: Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes())),
+            receiver: Address::new("recv_fail"),
+            amount: 10,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_004_010,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
+
+        pool.try_submit(tx.clone()).unwrap();
+        assert!(chain
+            .append_block_from_mempool(&mut pool, 8, 1_700_004_011)
+            .is_err());
+        assert_eq!(chain.height(), 0);
+        assert_eq!(pool.len(), 1);
     }
 }

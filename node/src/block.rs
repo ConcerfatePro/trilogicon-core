@@ -1,4 +1,7 @@
-﻿use crate::errors::ProtocolError;
+use std::collections::HashSet;
+
+use crate::crypto::Crypto;
+use crate::errors::ProtocolError;
 use crate::transaction::Transaction;
 
 #[derive(Clone, Debug)]
@@ -25,11 +28,46 @@ impl Block {
         self.height == 0
     }
 
+    /// Canonical preimage for block identity (V1).
+    /// Field order: height | previous_hash | timestamp | tx_hash_0 | tx_hash_1 | ...
+    /// Every included transaction must already pass `basic_validate` so `tx_hash` is meaningful.
+    pub fn block_header_preimage_bytes(&self) -> Vec<u8> {
+        let tx_hashes: Vec<&str> = self.transactions.iter().map(|t| t.tx_hash.as_str()).collect();
+        let joined = tx_hashes.join("|");
+        format!(
+            "{}|{}|{}|{}",
+            self.height, self.previous_hash, self.timestamp_unix, joined
+        )
+        .into_bytes()
+    }
+
+    pub fn compute_block_hash(&self) -> String {
+        Crypto::hash_bytes(&self.block_header_preimage_bytes())
+    }
+
+    pub fn validate_block_hash(&self) -> Result<(), ProtocolError> {
+        if self.block_hash.trim().is_empty() {
+            return Err(ProtocolError::InvalidBlock("missing block hash".to_string()));
+        }
+        let expected = self.compute_block_hash();
+        if self.block_hash != expected {
+            return Err(ProtocolError::InvalidBlock(
+                "block hash mismatch".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn basic_validate(&self) -> Result<(), ProtocolError> {
         if self.is_genesis() {
             if self.previous_hash != "GENESIS" || self.block_hash != "GENESIS_HASH" {
                 return Err(ProtocolError::InvalidBlock(
                     "invalid genesis constants".to_string(),
+                ));
+            }
+            if !self.transactions.is_empty() {
+                return Err(ProtocolError::InvalidBlock(
+                    "genesis must not contain transactions".to_string(),
                 ));
             }
             return Ok(());
@@ -41,13 +79,18 @@ impl Block {
             ));
         }
 
-        if self.block_hash.trim().is_empty() {
-            return Err(ProtocolError::InvalidBlock("missing block hash".to_string()));
+        let mut seen_tx_hashes: HashSet<&str> = HashSet::new();
+        for tx in &self.transactions {
+            if !seen_tx_hashes.insert(tx.tx_hash.as_str()) {
+                return Err(ProtocolError::DuplicateTransaction);
+            }
         }
 
         for tx in &self.transactions {
             tx.basic_validate()?;
         }
+
+        self.validate_block_hash()?;
 
         Ok(())
     }
@@ -57,6 +100,7 @@ impl Block {
 mod tests {
     use super::*;
     use crate::crypto::Crypto;
+    use crate::errors::ProtocolError;
     use crate::types::Address;
     use ed25519_dalek::{Signer, SigningKey};
 
@@ -86,6 +130,16 @@ mod tests {
     fn genesis_block_is_valid() {
         let block = Block::genesis();
         assert!(block.basic_validate().is_ok());
+    }
+
+    #[test]
+    fn genesis_rejects_non_empty_transactions() {
+        let mut block = Block::genesis();
+        block.transactions.push(sample_valid_tx());
+        assert!(matches!(
+            block.basic_validate(),
+            Err(ProtocolError::InvalidBlock(_))
+        ));
     }
 
     #[test]
@@ -122,20 +176,52 @@ mod tests {
             previous_hash: "prev_hash".to_string(),
             timestamp_unix: 1_700_000_103,
             transactions: vec![bad_tx],
-            block_hash: "block_hash".to_string(),
+            block_hash: "will_not_be_checked".to_string(),
         };
         assert!(block.basic_validate().is_err());
     }
 
     #[test]
     fn non_genesis_accepts_valid_structure_and_transactions() {
-        let block = Block {
+        let mut block = Block {
             height: 1,
             previous_hash: "prev_hash".to_string(),
             timestamp_unix: 1_700_000_104,
             transactions: vec![sample_valid_tx()],
-            block_hash: "block_hash".to_string(),
+            block_hash: String::new(),
         };
+        block.block_hash = block.compute_block_hash();
         assert!(block.basic_validate().is_ok());
+    }
+
+    #[test]
+    fn non_genesis_rejects_block_hash_mismatch() {
+        let mut block = Block {
+            height: 1,
+            previous_hash: "prev_hash".to_string(),
+            timestamp_unix: 1_700_000_105,
+            transactions: vec![sample_valid_tx()],
+            block_hash: String::new(),
+        };
+        block.block_hash = block.compute_block_hash();
+        block.timestamp_unix += 1; // preimage changed, hash now wrong
+        assert!(block.basic_validate().is_err());
+    }
+
+    #[test]
+    fn non_genesis_rejects_duplicate_transaction_id() {
+        let tx = sample_valid_tx();
+        let mut block = Block {
+            height: 1,
+            previous_hash: "prev_hash".to_string(),
+            timestamp_unix: 1_700_000_106,
+            transactions: vec![tx.clone(), tx],
+            block_hash: String::new(),
+        };
+        block.block_hash = block.compute_block_hash();
+        assert!(matches!(
+            block.basic_validate(),
+            Err(ProtocolError::DuplicateTransaction)
+        ));
     }
 }
