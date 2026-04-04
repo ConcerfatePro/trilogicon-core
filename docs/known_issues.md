@@ -13,3 +13,10 @@ This file tracks known limitations, unfinished areas, and important notes during
 ## Notes for release-candidate phase
 - The focus during freeze is bug fixing, testing, documentation, and reliability improvements.
 - New features should be deferred to post-V1 planning unless they are required to fix a real correctness or security issue.
+
+## RC1 hardening targets
+- verify repeatable fresh-clone setup from the README
+- verify invalid transaction rejection paths stay clean
+- verify restart and persistence behavior stays stable
+- verify shared-genesis setup is easy to follow
+- improve operator-facing troubleshooting notes if needed
