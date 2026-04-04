@@ -20,6 +20,7 @@ This file tracks known limitations, unfinished areas, and important notes during
 - verify restart and persistence behavior stays stable
 - verify shared-genesis setup is easy to follow
 - improve operator-facing troubleshooting notes if needed
+- queued state-invalid transactions can cause repeated `block production: insufficient balance` log spam until the pending queue is cleared
 
 ## Next RC1 task
 - add operator troubleshooting notes for common setup mistakes (existing wallet.seed, shared genesis mismatch, node started without genesis, send only queues tx)
