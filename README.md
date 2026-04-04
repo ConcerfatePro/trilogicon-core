@@ -2,6 +2,14 @@
 
 Minimal V1 value-transfer chain in Rust: accounts, signed transfers, blocks, deterministic replay protection, shared **genesis**, and basic TCP sync between nodes.
 
+## Current release-candidate phase
+
+The current stabilization branch is:
+
+`release/v1.0.0-rc1`
+
+V1 is feature-frozen. The current focus is bug fixing, testing, documentation, operator experience, and private technical validation.
+
 Design rules live under [`docs/`](docs/) (scope, invariants, architecture). **Genesis** is documented in [`docs/genesis.md`](docs/genesis.md). Module ownership and the consensus boundary are summarized in [`docs/modules.md`](docs/modules.md); the V1 completion checklist is [`docs/v1_checkpoint.md`](docs/v1_checkpoint.md). For fmt/clippy/test and PR expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Build
