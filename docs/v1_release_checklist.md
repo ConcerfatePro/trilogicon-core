@@ -1,9 +1,9 @@
 # Trilogicon V1 Release Checklist
 
 ## Protocol
-- [ ] V1 scope is documented
+- [x] V1 scope is documented
 - [x] V1 freeze is documented
-- [ ] Genesis behavior is documented
+- [x] Genesis behavior is documented
 - [ ] Transaction validation rules are documented
 - [ ] Block validation rules are documented
 
@@ -22,6 +22,6 @@
 - [x] chain persistence confirmed manually
 
 ## Release
-- [ ] known issues are written down
+- [x] known issues are written down
 - [ ] release candidate version is chosen
 - [ ] private test plan is ready
