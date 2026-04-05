@@ -136,14 +136,16 @@ That means Trilogicon v1 should avoid ambiguous serialization, hidden defaults, 
 
 The network must support grouping transactions into blocks.
 
-A block should contain protocol-defined data such as:
+In v1 rc1, a block contains protocol-defined data such as:
 - block height
 - previous block hash
 - timestamp
 - ordered transaction list
-- producer/miner or consensus-related data
-- proof or eligibility field depending on the chosen v1 consensus baseline
 - block hash
+
+V1 rc1 does **not** require producer identity, miner identity, or a separate proof or eligibility field on the wire.
+
+The block hash boundary must be defined only by the fields that are actually part of the implemented block format.
 
 ### 8. Block validation
 
@@ -177,8 +179,9 @@ Transactions in v1 should include an explicit fee field.
 
 At minimum, the fee exists to:
 - help discourage spam
-- support basic transaction selection policy
 - make transfer accounting explicit
+
+In v1 rc1, fees are present in transaction accounting, but they do **not** define fee-prioritized transaction ordering or fee-based inclusion policy.
 
 The exact fee destination and handling rules should be documented clearly in protocol behavior.
 
@@ -187,8 +190,16 @@ The exact fee destination and handling rules should be documented clearly in pro
 Trilogicon v1 should use a practical and clearly documented consensus baseline that supports:
 - block production
 - block validation
-- chain comparison
 - node synchronization
+- strict extension of the active chain tip
+
+In v1 rc1, the consensus posture is intentionally narrow.
+
+A candidate block is accepted only when:
+- its height is exactly the next expected height
+- its previous hash matches the current active tip exactly
+
+V1 rc1 does **not** claim a general multi-branch fork-choice rule or a full reorganization protocol.
 
 V1 does **not** need to solve every advanced consensus problem immediately.
 
