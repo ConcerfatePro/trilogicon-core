@@ -116,6 +116,6 @@ When writing docs:
 
 - be precise
 - be practical
-- align with the project’s narrow V1 mission
+- align with the project's narrow V1 mission
 - distinguish clearly between current version and future versions
-- preserve the project’s identity as a simple, predictable, security-first transfer network
+- preserve the project's identity as a simple, predictable, security-first transfer network
