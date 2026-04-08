@@ -7,6 +7,20 @@ use crate::genesis::Genesis;
 use crate::mempool::Mempool;
 use crate::state::State;
 
+/// Recompute account state by replaying non-genesis blocks on top of genesis allocations.
+pub fn recompute_state_from_blocks(
+    blocks: &[Block],
+    genesis: &Genesis,
+) -> Result<State, ProtocolError> {
+    let mut state = State::from_genesis(genesis)?;
+    for block in blocks.iter().skip(1) {
+        for tx in &block.transactions {
+            state.apply_transaction(tx)?;
+        }
+    }
+    Ok(state)
+}
+
 pub struct Blockchain {
     blocks: Vec<Block>,
     state: State,
@@ -105,6 +119,29 @@ impl Blockchain {
         self.blocks.last().map_or(0, |b| b.height)
     }
 
+    /// Drop blocks above `target_height` and rebuild [`State`] from `genesis` + remaining blocks.
+    ///
+    /// Used when local chain advanced in memory but durable storage failed: restores consistency
+    /// with the last persisted tip. `target_height` must be the height of the current durable tip
+    /// (typically `tip.height - 1` after one failed seal).
+    pub fn rollback_to_height(
+        &mut self,
+        target_height: u64,
+        genesis: &Genesis,
+    ) -> Result<(), ProtocolError> {
+        let current = self.height();
+        if target_height > current {
+            return Err(ProtocolError::StateError(format!(
+                "rollback target height {target_height} above current tip {current}"
+            )));
+        }
+        while self.height() > target_height {
+            self.blocks.pop();
+        }
+        self.state = recompute_state_from_blocks(&self.blocks, genesis)?;
+        Ok(())
+    }
+
     pub fn append_block(&mut self, block: Block) -> Result<(), ProtocolError> {
         block.basic_validate()?;
 
@@ -153,7 +190,7 @@ impl Blockchain {
         max_transactions: usize,
         timestamp_unix: u64,
     ) -> Result<usize, ProtocolError> {
-        let txs = mempool.ordered_candidates(max_transactions);
+        let txs = mempool.ordered_candidates_for_seal(&self.state, max_transactions);
         if txs.is_empty() {
             return Ok(0);
         }
@@ -574,7 +611,7 @@ mod tests {
     }
 
     #[test]
-    fn append_block_from_mempool_failure_keeps_mempool() {
+    fn append_block_from_mempool_skips_unexecutable_tx_without_draining_pool() {
         let mut chain = Blockchain::new();
         let mut pool = Mempool::new(10);
 
@@ -597,18 +634,19 @@ mod tests {
         tx.tx_hash = Crypto::hash_bytes(&payload);
 
         pool.try_submit(tx.clone()).unwrap();
-        assert!(
+        assert_eq!(
             chain
                 .append_block_from_mempool(&mut pool, 8, 1_700_004_011)
-                .is_err()
+                .unwrap(),
+            0
         );
         assert_eq!(chain.height(), 0);
         assert_eq!(pool.len(), 1);
     }
 
-    /// Mempool is FIFO: if nonce-1 is queued before nonce-0, sealing fails and the pool is unchanged.
+    /// If nonce-1 is queued before nonce-0, seal selection skips the gap and commits nonce-0 first.
     #[test]
-    fn append_block_from_mempool_rejects_wrong_nonce_order_without_draining_pool() {
+    fn append_block_from_mempool_skips_nonce_gap_and_seals_executable_tx() {
         let mut chain = Blockchain::new();
         let mut pool = Mempool::new(10);
 
@@ -654,12 +692,12 @@ mod tests {
         pool.try_submit(tx_nonce0).unwrap();
         assert_eq!(pool.len(), 2);
 
-        assert!(matches!(
-            chain.append_block_from_mempool(&mut pool, 8, 1_700_005_002),
-            Err(ProtocolError::InvalidNonce)
-        ));
-        assert_eq!(chain.height(), 0);
-        assert_eq!(pool.len(), 2);
+        let n = chain
+            .append_block_from_mempool(&mut pool, 8, 1_700_005_002)
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(chain.height(), 1);
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]
@@ -672,5 +710,80 @@ mod tests {
         let now = 1u64;
         assert!(chain.try_append_network_block(block, now).is_ok());
         assert_eq!(chain.height(), 1);
+    }
+
+    #[test]
+    fn recompute_state_from_blocks_matches_incremental_apply() {
+        use crate::genesis::{Genesis, GenesisAllocation};
+
+        let prev_hash = "GENESIS_HASH".to_string();
+        let b1 = valid_block_1(prev_hash.clone());
+        let sender = b1.transactions[0].sender.clone();
+        let genesis = Genesis {
+            allocations: vec![GenesisAllocation {
+                address: sender.0.clone(),
+                balance: 100,
+            }],
+        };
+        let mut from_doc = Blockchain::from_genesis(&genesis).unwrap();
+        from_doc.append_block(b1.clone()).unwrap();
+
+        let tip_hash = from_doc.blocks().last().unwrap().block_hash.clone();
+        let b2 = seal_block(Block {
+            height: 2,
+            previous_hash: tip_hash,
+            timestamp_unix: 1_700_001_002,
+            transactions: vec![sample_valid_tx()],
+            block_hash: String::new(),
+        });
+        let mut tx2 = b2.transactions[0].clone();
+        tx2.nonce = 1;
+        tx2.timestamp_unix = 1_700_001_003;
+        let p2 = tx2.unsigned_payload_bytes();
+        let signing_key = SigningKey::from_bytes(&[21u8; 32]);
+        tx2.signature = signing_key.sign(&p2).to_bytes().to_vec();
+        tx2.tx_hash = Crypto::hash_bytes(&p2);
+        let mut b2 = b2;
+        b2.transactions = vec![tx2];
+        b2.block_hash = b2.compute_block_hash();
+        from_doc.append_block(b2.clone()).unwrap();
+
+        let blocks = from_doc.blocks();
+        let replayed = recompute_state_from_blocks(blocks, &genesis).unwrap();
+        assert_eq!(
+            replayed.accounts_sorted(),
+            from_doc.state().accounts_sorted()
+        );
+    }
+
+    #[test]
+    fn rollback_to_height_restores_state_and_tip() {
+        use crate::genesis::{Genesis, GenesisAllocation};
+
+        let b1 = valid_block_1("GENESIS_HASH".into());
+        let sender = b1.transactions[0].sender.clone();
+        let genesis = Genesis {
+            allocations: vec![GenesisAllocation {
+                address: sender.0.clone(),
+                balance: 100,
+            }],
+        };
+        let mut chain = Blockchain::from_genesis(&genesis).unwrap();
+        chain.append_block(b1).unwrap();
+        assert_eq!(chain.height(), 1);
+        assert_eq!(chain.state().get_account(&sender).unwrap().nonce, 1);
+
+        chain.rollback_to_height(0, &genesis).unwrap();
+        assert_eq!(chain.height(), 0);
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain.state().get_account(&sender).unwrap().nonce, 0);
+        assert_eq!(chain.state().get_account(&sender).unwrap().balance, 100);
+    }
+
+    #[test]
+    fn rollback_to_height_rejects_target_above_tip() {
+        let mut chain = Blockchain::new();
+        let r = chain.rollback_to_height(1, &crate::genesis::Genesis::empty());
+        assert!(matches!(r, Err(ProtocolError::StateError(_))));
     }
 }

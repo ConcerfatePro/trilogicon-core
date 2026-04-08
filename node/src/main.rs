@@ -19,7 +19,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use node::encoding::{decode_transaction, encode_transaction};
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
-use node::network::NodeInner;
+use node::network::{NodeInner, WireRuntimeConfig};
+use node::peer_book::PeerBook;
 use node::storage::{BlockStore, load_blockchain_from_disk};
 use node::transaction::Transaction;
 use node::types::Address;
@@ -31,6 +32,7 @@ const PENDING_TX_FILE: &str = "pending_tx.tril";
 const GENESIS_FILE: &str = "genesis.toml";
 const DEFAULT_INTERVAL_SECS: u64 = 2;
 const MAX_PENDING_TX_FRAME: u32 = 4 * 1024 * 1024;
+const DEFAULT_NETWORK_ID: u32 = 1;
 
 fn usage(bin: &str) {
     eprintln!(
@@ -38,6 +40,8 @@ fn usage(bin: &str) {
   {bin} init [--data-dir DIR] [--genesis-balance N]
   {bin} run [--data-dir DIR] [--genesis PATH] [--interval-secs SECS]
           [--listen HOST:PORT] [--peers HOST:PORT,...] [--max-future-drift-secs N]
+          [--network-id N] [--handshake] [--require-handshake-inbound] [--no-legacy-inbound]
+          [--exchange-peers] [--announce-blocks]
   {bin} send [--data-dir DIR] [--genesis PATH] RECEIVER AMOUNT [FEE]
 
 Genesis: default {GENESIS_FILE} under --data-dir. init --genesis-balance writes it for the new wallet.
@@ -158,6 +162,12 @@ fn parse_run_args(
         Option<String>,
         Vec<String>,
         Option<u64>,
+        u32,
+        bool,
+        bool,
+        bool,
+        bool,
+        bool,
     ),
     String,
 > {
@@ -167,6 +177,12 @@ fn parse_run_args(
     let mut listen: Option<String> = None;
     let mut peers: Vec<String> = Vec::new();
     let mut max_future_drift_secs: Option<u64> = None;
+    let mut network_id = DEFAULT_NETWORK_ID;
+    let mut handshake_outbound = false;
+    let mut require_handshake_inbound = false;
+    let mut allow_legacy_inbound = true;
+    let mut exchange_peers = false;
+    let mut announce_blocks = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -224,6 +240,35 @@ fn parse_run_args(
                 );
                 i += 2;
             }
+            "--network-id" => {
+                let v = args
+                    .get(i + 1)
+                    .ok_or_else(|| "--network-id needs a value".to_string())?;
+                network_id = v
+                    .parse()
+                    .map_err(|_| "--network-id must be a u32".to_string())?;
+                i += 2;
+            }
+            "--handshake" => {
+                handshake_outbound = true;
+                i += 1;
+            }
+            "--require-handshake-inbound" => {
+                require_handshake_inbound = true;
+                i += 1;
+            }
+            "--no-legacy-inbound" => {
+                allow_legacy_inbound = false;
+                i += 1;
+            }
+            "--exchange-peers" => {
+                exchange_peers = true;
+                i += 1;
+            }
+            "--announce-blocks" => {
+                announce_blocks = true;
+                i += 1;
+            }
             other => return Err(format!("unknown flag: {other}")),
         }
     }
@@ -234,6 +279,12 @@ fn parse_run_args(
         listen,
         peers,
         max_future_drift_secs,
+        network_id,
+        handshake_outbound,
+        require_handshake_inbound,
+        allow_legacy_inbound,
+        exchange_peers,
+        announce_blocks,
     ))
 }
 
@@ -348,7 +399,14 @@ fn cmd_send(
     let wallet = load_wallet(data_dir).map_err(|e| e.to_string())?;
     let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     let chain_path = data_dir.join(CHAIN_FILE);
-    let chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
+    let (chain, repaired) =
+        load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
+    if repaired {
+        node::diag::line(
+            "storage",
+            "repaired chain.blocks (truncated tail removed; see last complete block)",
+        );
+    }
     let nonce = chain
         .state()
         .get_account(&wallet.address())
@@ -369,6 +427,7 @@ fn cmd_send(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_run(
     data_dir: &Path,
     genesis_flag: Option<&str>,
@@ -376,32 +435,83 @@ fn cmd_run(
     listen: Option<String>,
     peers: Vec<String>,
     max_future_drift_secs: Option<u64>,
+    network_id: u32,
+    handshake_outbound: bool,
+    require_handshake_inbound: bool,
+    allow_legacy_inbound: bool,
+    exchange_peers: bool,
+    announce_blocks: bool,
 ) -> Result<(), String> {
     fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
     let wallet = load_wallet(data_dir).map_err(|e| e.to_string())?;
     let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     let chain_path = data_dir.join(CHAIN_FILE);
     let pending_path = data_dir.join(PENDING_TX_FILE);
-    let mut chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
+    let (mut chain, repaired) =
+        load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| e.to_string())?;
+    if repaired {
+        node::diag::line(
+            "storage",
+            "repaired chain.blocks (truncated tail removed; see last complete block)",
+        );
+    }
     if let Some(d) = max_future_drift_secs {
         chain.consensus_params_mut().max_future_drift_secs = d;
     }
     let store = BlockStore::open_append(&chain_path).map_err(|e| e.to_string())?;
+    let wire = WireRuntimeConfig::from_genesis(&genesis, network_id, handshake_outbound)?
+        .with_inbound_policy(require_handshake_inbound, allow_legacy_inbound)
+        .with_gossip_extensions(exchange_peers, announce_blocks);
+
+    let mut peer_book = PeerBook::load_or_empty(&PeerBook::path_in_data_dir(data_dir))
+        .map_err(|e| e.to_string())?;
+    for p in &peers {
+        peer_book.merge_seed(p.clone());
+    }
+    peer_book
+        .save(&PeerBook::path_in_data_dir(data_dir))
+        .map_err(|e| e.to_string())?;
+
     let inner = NodeInner {
+        genesis: genesis.clone(),
+        wire,
         chain,
         pool: Mempool::new(10_000),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book,
     };
     let state = Arc::new(Mutex::new(inner));
 
-    for p in &peers {
+    let sync_targets = {
+        let g = state.lock().expect("node lock");
+        g.peer_book.sync_candidates(&peers)
+    };
+    if !sync_targets.is_empty() {
         let now = unix_now_secs();
+        let filtered = {
+            let g = state.lock().expect("node lock");
+            g.peer_book.filter_available(&sync_targets, now)
+        };
         let mut g = state.lock().expect("node lock");
-        match node::network::sync_from_peer(&mut g, p, now) {
-            Ok(n) if n > 0 => eprintln!("sync: +{n} block(s) from {p}"),
-            Ok(_) => {}
-            Err(e) => eprintln!("sync from {p}: {e}"),
+        for p in &filtered {
+            match node::network::sync_from_peer(&mut g, p, now) {
+                Ok(n) if n > 0 => {
+                    node::diag::line("sync", format!("+{n} block(s) from {p}"));
+                    g.peer_book.record_ok(p);
+                }
+                Ok(_) => g.peer_book.record_ok(p),
+                Err(e) if e.starts_with(node::network::FATAL_SYNC_PREFIX) => {
+                    drop(g);
+                    return Err(e);
+                }
+                Err(_) => g.peer_book.record_fail(p),
+            }
         }
+        g.peer_book
+            .save(&PeerBook::path_in_data_dir(data_dir))
+            .map_err(|e| e.to_string())?;
     }
 
     if let Some(addr) = listen.clone() {
@@ -430,40 +540,114 @@ fn cmd_run(
                 Ok(txs) => {
                     for tx in txs {
                         match g.pool.try_submit(tx) {
-                            Ok(()) => eprintln!("mempool: accepted tx"),
-                            Err(e) => eprintln!("mempool: rejected ({e})"),
+                            Ok(()) => node::diag::line("mempool", "accepted tx"),
+                            Err(e) => node::diag::line("mempool", format!("rejected ({e})")),
                         }
                     }
                 }
-                Err(e) => eprintln!("pending_tx.tril: {e}"),
+                Err(e) => node::diag::line("pending_tx", e),
             }
 
             let now = unix_now_secs();
-            #[allow(clippy::explicit_auto_deref)]
-            let NodeInner { chain, pool, store } = &mut *g;
-            match chain.append_block_from_mempool(pool, 64, now) {
-                Ok(0) => None,
-                Ok(n) => {
-                    let tip = chain.blocks().last().expect("tip after append").clone();
-                    if let Err(e) = store.append_block(&tip) {
-                        eprintln!("persist block: {e}");
+            let sealed_block = {
+                let inner = &mut *g;
+                match inner
+                    .chain
+                    .append_block_from_mempool(&mut inner.pool, 64, now)
+                {
+                    Ok(0) => None,
+                    Ok(n) => {
+                        let tip = inner
+                            .chain
+                            .blocks()
+                            .last()
+                            .expect("tip after append")
+                            .clone();
+                        let durable_height = tip.height.saturating_sub(1);
+                        if let Err(e) = inner.store.append_block(&tip) {
+                            node::diag::line(
+                                "persist",
+                                format!(
+                                    "seal write failed ({e}); rollback to height {durable_height}"
+                                ),
+                            );
+                            if let Err(rerr) = inner
+                                .chain
+                                .rollback_to_height(durable_height, &inner.genesis)
+                            {
+                                return Err(format!(
+                                    "{}persist/rollback failure: {rerr}; inspect {}",
+                                    node::network::FATAL_SYNC_PREFIX,
+                                    chain_path.display()
+                                ));
+                            }
+                            for tx in &tip.transactions {
+                                if let Err(me) = inner.pool.try_submit(tx.clone()) {
+                                    node::diag::line(
+                                        "mempool",
+                                        format!("re-queue after rollback failed ({me})"),
+                                    );
+                                }
+                            }
+                            None
+                        } else {
+                            node::diag::line(
+                                "produce",
+                                format!("sealed height={} txs={n}", inner.chain.height()),
+                            );
+                            Some(tip)
+                        }
+                    }
+                    Err(e) => {
+                        node::diag::line("produce", format!("not sealed ({e})"));
                         None
-                    } else {
-                        eprintln!("sealed height={} with {n} transaction(s)", chain.height());
-                        Some(tip)
                     }
                 }
-                Err(e) => {
-                    eprintln!("block production: {e}");
-                    None
+            };
+
+            if !peers_for_gossip.is_empty() {
+                let now_sync = unix_now_secs();
+                for p in &peers_for_gossip {
+                    g.peer_book.merge_seed(p.clone());
                 }
+                let targets = g.peer_book.sync_candidates(&peers_for_gossip);
+                let filtered = g.peer_book.filter_available(&targets, now_sync);
+                for p in &filtered {
+                    match node::network::sync_from_peer(&mut g, p, now_sync) {
+                        Ok(n) if n > 0 => {
+                            node::diag::line("sync", format!("+{n} block(s) from {p}"));
+                            g.peer_book.record_ok(p);
+                        }
+                        Ok(_) => g.peer_book.record_ok(p),
+                        Err(e) if e.starts_with(node::network::FATAL_SYNC_PREFIX) => {
+                            drop(g);
+                            return Err(e);
+                        }
+                        Err(_) => g.peer_book.record_fail(p),
+                    }
+                }
+                g.peer_book
+                    .save(&PeerBook::path_in_data_dir(data_dir))
+                    .map_err(|e| e.to_string())?;
             }
+
+            sealed_block
         };
 
         if let Some(ref block) = sealed {
+            let wire_snap = {
+                let g = state.lock().expect("node lock");
+                g.wire.clone()
+            };
             for p in &peers_for_gossip {
-                if let Err(e) = node::network::push_block_to_peer(p, block) {
-                    eprintln!("gossip block to {p}: {e}");
+                if let Err(e) = node::network::push_block_to_peer_inner(
+                    p,
+                    block,
+                    Some(&wire_snap),
+                    block.height,
+                    &block.block_hash,
+                ) {
+                    node::diag::line("gossip", format!("[{p}] push block failed: {e}"));
                 }
             }
         }
@@ -485,7 +669,20 @@ fn run_cli(args: &[String]) -> Result<(), String> {
             cmd_init(&dir, genesis_bal)
         }
         "run" => {
-            let (dir, genesis, interval, listen, peers, max_future) = parse_run_args(&args[2..])?;
+            let (
+                dir,
+                genesis,
+                interval,
+                listen,
+                peers,
+                max_future,
+                network_id,
+                handshake_out,
+                require_hs_in,
+                allow_legacy_in,
+                exchange_peers,
+                announce_blocks,
+            ) = parse_run_args(&args[2..])?;
             cmd_run(
                 &dir,
                 genesis.as_deref(),
@@ -493,6 +690,12 @@ fn run_cli(args: &[String]) -> Result<(), String> {
                 listen,
                 peers,
                 max_future,
+                network_id,
+                handshake_out,
+                require_hs_in,
+                allow_legacy_in,
+                exchange_peers,
+                announce_blocks,
             )
         }
         "send" => {

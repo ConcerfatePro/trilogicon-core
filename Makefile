@@ -1,7 +1,7 @@
 # Trilogicon — contributor shortcuts (run from repo root).
 # On Windows without `make`, run the commands in CONTRIBUTING.md from `node/`.
 
-.PHONY: fmt clippy test ci
+.PHONY: fmt fmt-check clippy test ci
 
 fmt:
 	cd node && cargo fmt --all

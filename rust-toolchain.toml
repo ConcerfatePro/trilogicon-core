@@ -1,0 +1,5 @@
+# Used by local `cargo` (walks up from `node/`) and honored by rustup.
+# CI installs the same via dtolnay/rust-toolchain@stable with fmt + clippy components.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

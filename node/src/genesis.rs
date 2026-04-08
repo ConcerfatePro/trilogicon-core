@@ -102,13 +102,19 @@ impl Genesis {
 
     /// Commitment over allocations (sorted). Operators compare hex to ensure they share genesis.
     pub fn state_commitment_hex(&self) -> Result<String, ProtocolError> {
+        let raw = self.state_commitment_raw32()?;
+        Ok(hex::encode(raw))
+    }
+
+    /// Same preimage as [`Self::state_commitment_hex`], raw SHA-256 bytes (wire handshake).
+    pub fn state_commitment_raw32(&self) -> Result<[u8; 32], ProtocolError> {
         let pairs = self.sorted_pairs()?;
         let lines: Vec<String> = pairs
             .iter()
             .map(|(a, b)| format!("{}|{}", a.0, b))
             .collect();
         let preimage = lines.join("\n");
-        Ok(Crypto::hash_bytes(preimage.as_bytes()))
+        Ok(Crypto::sha256_raw32(preimage.as_bytes()))
     }
 }
 

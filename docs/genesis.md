@@ -34,6 +34,6 @@ The CLI command `init --genesis-balance N` creates `wallet.seed` and writes `gen
 | `node/src/genesis.rs` | TOML format, validation, state commitment |
 | `node/src/state.rs` | `from_genesis`, `accounts_sorted` |
 | `node/src/blockchain.rs` | `from_genesis`, `append_block` |
-| `node/src/storage.rs` | `load_blockchain_from_disk(path, genesis)` |
+| `node/src/storage.rs` | `load_blockchain_from_disk(path, genesis) -> (Blockchain, repaired)` |
 | `node/src/main.rs` | `--genesis`, `init --genesis-balance` |
 | `node/tests/genesis_convergence.rs` | Two-node convergence without manual funding |

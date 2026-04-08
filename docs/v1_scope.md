@@ -239,6 +239,18 @@ The following are intentionally **out of scope** for Trilogicon v1:
 
 These are excluded because they would increase complexity before the core transfer system is fully proven.
 
+## What V1 does not guarantee
+
+V1 is a minimal correctness-and-sync baseline, not a production security audit or a complete adversarial threat model. The design targets **honest nodes, shared genesis, and explicit protocol rules**. It does **not** promise:
+
+- **Decentralization or robustness under attack** — Deployments are not claimed to resist eclipse attacks, Sybil-dominated peer sets, or well-resourced network adversaries.
+- **Partition and healing behavior** — Connectivity splits, stale tips, and operator recovery are not fully specified; nodes may require manual intervention.
+- **Strong DoS resistance** — Framing limits, sync caps, and mempool bounds **mitigate** abuse; they do not make an internet-facing node invulnerable.
+- **Global finality beyond local rules** — Acceptance is strict tip extension only; there is no general fork-choice or reorg protocol in V1 rc1.
+- **Wallet and operational security** — Key material lives in local files; backup, permissions, and compromise handling are operator responsibilities.
+
+Honest nodes using the same genesis and validation code still **agree on validity** for the same chain data under the documented rules. The limits above concern **deployment, adversaries, and unspecified environments**, not on-ledger rule ambiguity.
+
 ## What success looks like
 
 Trilogicon v1 is successful if it can do the following well:

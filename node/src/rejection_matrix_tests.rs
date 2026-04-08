@@ -254,6 +254,30 @@ fn v1_rejects_block_timestamp_too_far_in_future_vs_local_time_on_network_path() 
 }
 
 #[test]
+fn v1_network_path_rejects_future_block_that_append_block_accepts() {
+    let mut chain = Blockchain::new();
+    chain.consensus_params_mut().max_future_drift_secs = 60;
+    let tx = signed_tx(13, "r", 1, 1, 0, 1_800_013_000);
+    chain.state_mut().create_account(tx.sender.clone(), 50);
+    let mut block = seal(Block {
+        height: 1,
+        previous_hash: "GENESIS_HASH".into(),
+        timestamp_unix: 2_000_000_000,
+        transactions: vec![tx],
+        block_hash: String::new(),
+    });
+    block.block_hash = block.compute_block_hash();
+    let now = 1_000_000_000u64;
+    assert!(matches!(
+        chain.try_append_network_block(block.clone(), now),
+        Err(ProtocolError::InvalidBlock(_))
+    ));
+    assert_eq!(chain.height(), 0);
+    assert!(chain.append_block(block).is_ok());
+    assert_eq!(chain.height(), 1);
+}
+
+#[test]
 fn v1_consensus_local_time_rule_documented() {
     assert!(validate_block_vs_local_time(200, 100, 50).is_err());
     assert!(validate_block_vs_local_time(149, 100, 50).is_ok());

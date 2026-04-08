@@ -6,3 +6,6 @@ node/tril_data/
 
 # Nested copy of the repo root (accidental); delete locally if not needed
 trilogicon-core/
+
+#cursor instructions
+/.cursor/

@@ -1,6 +1,7 @@
-//! Subprocess E2E: real `node` binary, two data dirs, merged genesis, listener + producer + send.
+//! Subprocess E2E: `--handshake`, `--exchange-peers`, `--announce-blocks`, and strict inbound HELLO.
 //!
-//! Requires `CARGO_BIN_EXE_node` (set automatically by `cargo test`).
+//! - B seeds an unreachable peer so `REQUEST_PEERS` returns something A can merge.
+//! - After inbound HELLO, B should record A's socket in `peer_book.toml` (>= 2 `addr` lines).
 
 mod e2e_common;
 
@@ -11,9 +12,13 @@ use std::time::Duration;
 use e2e_common::{setup_two_node_genesis, wait_listen_addr};
 use node::storage::load_blockchain_from_disk;
 
+fn count_addr_entries(peer_book_toml: &str) -> usize {
+    peer_book_toml.matches("addr =").count()
+}
+
 #[test]
-fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
-    let g = setup_two_node_genesis("basic");
+fn e2e_gossip_extensions_handshake_chains_and_peer_exchange() {
+    let g = setup_two_node_genesis("gossip_ext");
     let bin = &g.bin;
     let dir_a = &g.dir_a;
     let dir_b = &g.dir_b;
@@ -25,8 +30,12 @@ fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
             dir_b.to_str().unwrap(),
             "--listen",
             "127.0.0.1:0",
+            "--peers",
+            "127.0.0.1:9",
             "--interval-secs",
             "1",
+            "--require-handshake-inbound",
+            "--no-legacy-inbound",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -47,9 +56,14 @@ fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
             &peer_b,
             "--interval-secs",
             "1",
+            "--handshake",
+            "--exchange-peers",
+            "--announce-blocks",
+            "--require-handshake-inbound",
+            "--no-legacy-inbound",
         ])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn run a");
 
@@ -68,7 +82,7 @@ fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
         .expect("spawn send");
     assert!(send_status.success(), "send failed");
 
-    thread::sleep(Duration::from_secs(8));
+    thread::sleep(Duration::from_secs(10));
 
     let _ = child_a.kill();
     let _ = child_b.kill();
@@ -91,10 +105,17 @@ fn e2e_two_nodes_merge_genesis_send_and_match_chains() {
         chain_b.blocks().last().unwrap().block_hash,
         "tip hash mismatch"
     );
-    assert_eq!(
-        chain_a.state().accounts_sorted(),
-        chain_b.state().accounts_sorted(),
-        "state mismatch"
+
+    let book_a = std::fs::read_to_string(dir_a.join("peer_book.toml")).expect("read peer_book a");
+    assert!(
+        book_a.contains("127.0.0.1:9"),
+        "A should merge peer list from B (seed 127.0.0.1:9); got:\n{book_a}"
+    );
+
+    let book_b = std::fs::read_to_string(dir_b.join("peer_book.toml")).expect("read peer_book b");
+    assert!(
+        count_addr_entries(&book_b) >= 2,
+        "B should record inbound HELLO peer plus seed; expected >= 2 addr lines, got:\n{book_b}"
     );
 
     let _ = std::fs::remove_dir_all(&g.root);

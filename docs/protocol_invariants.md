@@ -115,6 +115,7 @@ These `node` tests name the main adversarial classes for V1 (see also finer-grai
 | Malformed block bytes | `v1_rejects_malformed_block_encoding_truncated`, `v1_rejects_malformed_block_encoding_trailing_garbage` | `decode_block` |
 | Timestamp vs parent (`min_block_interval_secs`) | `v1_rejects_block_timestamp_violating_min_interval_after_parent` | `ConsensusParams` on chain |
 | Timestamp vs local clock (`max_future_drift_secs`) | `v1_rejects_block_timestamp_too_far_in_future_vs_local_time_on_network_path` | `try_append_network_block` |
+| Same future timestamp: network path rejects, `append_block` accepts | `v1_network_path_rejects_future_block_that_append_block_accepts` | Ingress local-time check vs producer path |
 | Wall-clock helper | `v1_consensus_local_time_rule_documented` | `validate_block_vs_local_time` directly |
 
-Mempool FIFO with wrong nonce ordering is covered by `blockchain::tests::append_block_from_mempool_rejects_wrong_nonce_order_without_draining_pool`.
+Mempool seal selection skips non-executable nonces in submission order (see `blockchain::tests::append_block_from_mempool_skips_nonce_gap_and_seals_executable_tx`).

@@ -7,6 +7,8 @@
 
 ## Quick checks (same as CI)
 
+GitHub Actions runs the same three steps on **ubuntu-latest**, **windows-latest**, and **macos-latest** for pushes and PRs to `main`, plus a **cargo audit** job (see `.github/workflows/ci.yml`). Dependabot proposes **GitHub Actions** updates weekly (`.github/dependabot.yml`).
+
 From the repository root, using **GNU Make** (Git Bash, WSL, macOS, Linux):
 
 ```bash
@@ -21,6 +23,8 @@ cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+Stable Rust with `rustfmt` and `clippy` is recorded in `rust-toolchain.toml` at the repo root (`rustup` will pick it up when you `cd node`).
 
 Subprocess integration tests (`cli_*_e2e.rs`) take roughly **40+ seconds** because they start real `node` processes and use wall-clock delays.
 

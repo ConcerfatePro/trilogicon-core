@@ -15,6 +15,8 @@ pub enum ProtocolError {
     DuplicateTransaction,
     /// Mempool has reached its configured capacity.
     MempoolFull,
+    /// Another pending transaction already uses this sender and nonce (different tx id).
+    MempoolNonceConflict,
     /// Invalid or conflicting genesis configuration.
     GenesisError(String),
 }
@@ -32,6 +34,7 @@ impl fmt::Display for ProtocolError {
             Self::StateError(msg) => write!(f, "state error: {msg}"),
             Self::DuplicateTransaction => write!(f, "duplicate transaction"),
             Self::MempoolFull => write!(f, "mempool full"),
+            Self::MempoolNonceConflict => write!(f, "mempool nonce conflict"),
             Self::GenesisError(msg) => write!(f, "genesis error: {msg}"),
         }
     }

@@ -9,6 +9,11 @@ impl Crypto {
         hex::encode(digest)
     }
 
+    /// Raw SHA-256 digest (e.g. genesis commitment on the wire).
+    pub fn sha256_raw32(payload: &[u8]) -> [u8; 32] {
+        Sha256::digest(payload).into()
+    }
+
     pub fn address_from_public_key(public_key: &[u8]) -> String {
         Self::hash_bytes(public_key)
     }

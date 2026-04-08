@@ -6,6 +6,29 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
 
+#[cfg(test)]
+use std::cell::Cell;
+
+// Thread-local: the next `append_payload` on this test thread fails once when set (unit tests only).
+#[cfg(test)]
+thread_local! {
+    static TEST_INJECT_APPEND_FAIL: Cell<bool> = const { Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(crate) fn test_set_inject_append_fail(v: bool) {
+    TEST_INJECT_APPEND_FAIL.with(|c| c.set(v));
+}
+
+#[cfg(test)]
+fn test_inject_append_take() -> bool {
+    TEST_INJECT_APPEND_FAIL.with(|c| {
+        let t = c.get();
+        c.set(false);
+        t
+    })
+}
+
 use crate::block::Block;
 use crate::blockchain::Blockchain;
 use crate::encoding::{EncodeError, decode_block, encode_block};
@@ -68,6 +91,10 @@ impl BlockStore {
 
     /// Write one frame: `u32_be len` + payload. Syncs to disk for durability.
     pub fn append_payload(&mut self, payload: &[u8]) -> io::Result<()> {
+        #[cfg(test)]
+        if test_inject_append_take() {
+            return Err(io::Error::other("test: injected append failure"));
+        }
         let len = u32::try_from(payload.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -83,7 +110,7 @@ impl BlockStore {
         self.append_payload(&encode_block(block))
     }
 
-    /// Read all blocks in file order (empty file → empty vec).
+    /// Read all blocks in file order (empty file → empty vec). Read-only: fails on truncated tail or trailing garbage.
     pub fn read_all_blocks(path: impl AsRef<Path>) -> Result<Vec<Block>, StorageError> {
         let path = path.as_ref();
         if !path.exists() {
@@ -112,6 +139,46 @@ impl BlockStore {
         }
         Ok(out)
     }
+
+    /// Like [`Self::read_all_blocks`], but if the file ends with a partial frame, truncates the file
+    /// to the last complete frame and returns `repaired = true`.
+    pub fn read_all_blocks_repairing_tail(
+        path: impl AsRef<Path>,
+    ) -> Result<(Vec<Block>, bool), StorageError> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Ok((Vec::new(), false));
+        }
+        let mut data = fs::read(path)?;
+        let mut out = Vec::new();
+        let mut pos = 0usize;
+        let mut valid_end = 0usize;
+        while pos < data.len() {
+            if pos + 4 > data.len() {
+                break;
+            }
+            let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                as usize;
+            pos += 4;
+            if len as u32 > MAX_FRAME_BYTES {
+                return Err(StorageError::Decode("frame exceeds max size".into()));
+            }
+            if pos + len > data.len() {
+                break;
+            }
+            let payload = &data[pos..pos + len];
+            let block = decode_block(payload)?;
+            out.push(block);
+            pos += len;
+            valid_end = pos;
+        }
+        let repaired = valid_end < data.len();
+        if repaired {
+            data.truncate(valid_end);
+            fs::write(path, &data)?;
+        }
+        Ok((out, repaired))
+    }
 }
 
 fn chain_from_genesis(genesis: &Genesis) -> Result<Blockchain, StorageError> {
@@ -123,16 +190,19 @@ fn chain_from_genesis(genesis: &Genesis) -> Result<Blockchain, StorageError> {
 
 /// Build chain from `genesis` (height-0 state), then apply every stored block in file order.
 /// Empty or missing file → chain is genesis tip only.
+///
+/// If the file ends with a partial frame or trailing bytes after the last complete block, the tail is
+/// truncated to the last good frame on disk and the second return value is `true`.
 pub fn load_blockchain_from_disk(
     path: impl AsRef<Path>,
     genesis: &Genesis,
-) -> Result<Blockchain, StorageError> {
-    let blocks = BlockStore::read_all_blocks(path)?;
+) -> Result<(Blockchain, bool), StorageError> {
+    let (blocks, repaired) = BlockStore::read_all_blocks_repairing_tail(path)?;
     let mut chain = chain_from_genesis(genesis)?;
     for block in blocks {
         chain.append_block(block).map_err(StorageError::Replay)?;
     }
-    Ok(chain)
+    Ok((chain, repaired))
 }
 
 /// Apply [`Blockchain::append_block`] then persist the same block. If disk fails, the chain
@@ -249,7 +319,7 @@ mod tests {
             assert_eq!(s.nonce, 2);
         }
 
-        let loaded = load_blockchain_from_disk(&path, &genesis).unwrap();
+        let (loaded, _) = load_blockchain_from_disk(&path, &genesis).unwrap();
         let s = loaded.state().get_account(&sender).unwrap();
         assert_eq!(s.balance, 83);
         assert_eq!(s.nonce, 2);
@@ -262,17 +332,20 @@ mod tests {
     fn missing_file_loads_empty_chain() {
         let path = unique_store_path("missing");
         let _ = std::fs::remove_file(&path);
-        let chain = load_blockchain_from_disk(&path, &Genesis::empty()).unwrap();
+        let (chain, _) = load_blockchain_from_disk(&path, &Genesis::empty()).unwrap();
         assert_eq!(chain.height(), 0);
         assert_eq!(chain.len(), 1);
     }
 
     #[test]
-    fn truncated_file_errors() {
+    fn truncated_length_prefix_repairs_on_load() {
         let path = unique_store_path("trunc");
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, [0u8, 0u8, 0u8, 0x10]).unwrap();
-        assert!(load_blockchain_from_disk(&path, &Genesis::empty()).is_err());
+        let (chain, repaired) = load_blockchain_from_disk(&path, &Genesis::empty()).unwrap();
+        assert!(repaired);
+        assert_eq!(chain.height(), 0);
+        assert!(BlockStore::read_all_blocks(&path).unwrap().is_empty());
         let _ = std::fs::remove_file(&path);
     }
 
@@ -384,13 +457,28 @@ mod tests {
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
         f.write_all(&[0x00]).unwrap();
 
-        match load_blockchain_from_disk(&path, &genesis) {
-            Ok(_) => panic!("expected decode error"),
-            Err(e) => assert!(
-                matches!(&e, StorageError::Decode(s) if s.contains("truncated frame length")),
-                "unexpected err: {e}"
-            ),
-        }
+        let err = BlockStore::read_all_blocks(&path).unwrap_err();
+        assert!(
+            matches!(&err, StorageError::Decode(s) if s.contains("truncated frame length")),
+            "unexpected err: {err}"
+        );
+
+        let (loaded, repaired) = load_blockchain_from_disk(&path, &genesis).unwrap();
+        assert!(repaired);
+        assert_eq!(loaded.height(), 1);
+        assert!(BlockStore::read_all_blocks(&path).unwrap().len() == 1);
+        let s = loaded.state().get_account(&sender).unwrap();
+        assert_eq!(s.nonce, 1);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_all_blocks_repairing_tail_reports_repaired_without_mid_file_corruption() {
+        let path = unique_store_path("repair_flag");
+        let _ = std::fs::remove_file(&path);
+        let (_, repaired) = BlockStore::read_all_blocks_repairing_tail(&path).unwrap();
+        assert!(!repaired);
         let _ = std::fs::remove_file(&path);
     }
 }
