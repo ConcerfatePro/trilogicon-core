@@ -16,6 +16,7 @@ impl ExclusiveFileLock {
     pub fn acquire_exclusive(path: &Path) -> io::Result<Self> {
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)?;
@@ -27,6 +28,7 @@ impl ExclusiveFileLock {
     pub fn try_acquire_exclusive(path: &Path) -> io::Result<Option<Self>> {
         let file = OpenOptions::new()
             .create(true)
+            .truncate(false)
             .read(true)
             .write(true)
             .open(path)?;
@@ -40,7 +42,7 @@ impl ExclusiveFileLock {
 
 impl Drop for ExclusiveFileLock {
     fn drop(&mut self) {
-        let _ = self.file.unlock();
+        let _ = FileExt::unlock(&self.file);
     }
 }
 

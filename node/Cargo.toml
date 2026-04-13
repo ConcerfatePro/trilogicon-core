@@ -1,9 +1,9 @@
 [package]
 name = "node"
-version = "0.1.0"
+version = "2.0.0"
 edition = "2024"
 rust-version = "1.85"
-description = "Trilogicon V1 node: accounts, signed transfers, blocks, and basic TCP sync."
+description = "Trilogicon reference node: V1 transfer protocol + V2 persistence, sync, and defensive networking."
 readme = "../README.md"
 license = "MIT"
 repository = "https://github.com/ConcerfatePro/trilogicon-core"

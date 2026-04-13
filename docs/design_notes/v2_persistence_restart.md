@@ -6,8 +6,9 @@ Short operational contract for **node hardening** (V2). Does **not** change V1 t
 
 ## `chain.blocks`
 
-- **Recovery:** On detectable corruption, truncation, or decode failure, the node **fails closed** (refuse to load the chain / refuse to advance committed state from that path). **No silent auto-repair**, truncation, or rewrite of chain data by default.
-- **Operator action:** Recovery is **manual**: restore from backup, replace the file, or follow an **explicit** documented procedure (e.g. delete `chain.blocks` and re-sync from peers from genesis—operator accepts re-download cost). Any future tool that mutates chain data must be **opt-in** and documented, not implicit.
+- **Recovery:** On detectable corruption, truncation, or decode failure, the node **fails closed** (refuse to load the chain / refuse to advance committed state from that path), except for the narrow tail case below.
+- **Narrow tail cleanup:** If `chain.blocks` has at least one complete block frame and then ends with only 1-3 extra bytes (an incomplete next length prefix), startup truncates those bytes, returns `repaired = true`, and the reference CLI logs a `[storage]` repair line. This does **not** truncate a complete or partially described frame; it preserves replay from the last complete frame.
+- **Operator action:** Beyond the narrow tail cleanup above, recovery is **manual**: restore from backup, replace the file, or follow an **explicit** documented procedure (e.g. delete `chain.blocks` and re-sync from peers from genesis—operator accepts re-download cost). Any future tool that mutates chain data must be **opt-in** and documented, not implicit.
 - **V2 implementation:** Prefer clear errors and exit codes over partial startup with an undefined tip.
 - **On-disk layout (local only; not a wire protocol change):**
   - **New / empty files:** After an 8-byte magic header (`TRILBC01`), each record is `u32_be len` + `encode_block` payload + `u32_be CRC-32` (IEEE) over that payload. Load verifies CRC; mismatch or truncation → fail closed.
@@ -71,7 +72,7 @@ This section is **node implementation** and **operator** documentation. It is **
 
 ### What “fail-closed” means at startup
 
-- **`chain.blocks`:** Any detectable truncation, malformed frame, or replay failure (`load_blockchain_from_disk`) → **startup refuses** to build a chain tip (clear error; no partial “best effort” tip).
+- **`chain.blocks`:** Any malformed frame, CRC mismatch, full length prefix with missing body/CRC, decode error, or replay failure (`load_blockchain_from_disk`) → **startup refuses** to build a chain tip (clear error; no partial “best effort” tip). A 1-3 byte incomplete next length-prefix tail after a complete frame is truncated and logged as the only automatic repair.
 - **`genesis_bind.toml` vs `genesis.toml`:** Mismatch → **startup refuses** (do not mix genesis and an existing bound directory). Deleting `genesis_bind.toml` alone to “fix” mismatch is **unsafe** once `chain.blocks` has history.
 - **`pending_tx.tril`:** Garbled file → **`run` refuses that drain cycle** with an error; the file is **not** truncated. The process may continue (reference `main` logs and retries next interval); operator must fix or delete the file per guidance below.
 
@@ -86,7 +87,7 @@ This section is **node implementation** and **operator** documentation. It is **
 
 - If an append hits **I/O or sync failure**, the in-memory `BlockStore` sets **`poisoned`** and refuses further appends for **that process**.
 - The poison flag is **not** persisted in `chain.blocks`. A **new** `BlockStore` after restart does **not** start poisoned.
-- **However:** if the crash left `chain.blocks` **partially written** (torn frame), the **next** startup fails at **load** (fail-closed), not at poison. Operator must restore a consistent file.
+- **However:** if the crash left `chain.blocks` **partially written** beyond the narrow 1-3 byte incomplete length-prefix tail, the **next** startup fails at **load** (fail-closed), not at poison. Operator must restore a consistent file.
 - Integration tests for reload live under `node/tests/restart_matrix_v2.rs` and `node/tests/persistence_v2.rs`; poison reopen behavior is covered in `storage` unit tests.
 
 ### Operator recovery (concise)
@@ -100,7 +101,7 @@ This section is **node implementation** and **operator** documentation. It is **
 
 ### Not guaranteed yet (backlog / honesty)
 
-- **Automatic repair** of torn last frame after crash (explicitly out of scope; fail-closed instead).
+- **Automatic repair** of a torn last frame after a complete length prefix, body, or CRC byte has appeared (explicitly out of scope; fail-closed instead). Only the 1-3 byte incomplete length-prefix tail is repaired.
 - **On-disk mempool** (in-memory only except via `pending_tx.tril`).
 - **Multi-node simultaneous crash** scenarios beyond what CLI E2E and library tests cover.
 - **`pending_tx.tril`:** Stronger durability than the documented frame + lock + replace behavior is **not** implied; operators should not assume extra on-disk guarantees.
@@ -109,4 +110,4 @@ This section is **node implementation** and **operator** documentation. It is **
 
 ## Auto-repair
 
-**Default: none.** No automatic truncation or repair of `chain.blocks` or genesis-backed state without explicit operator action or a dedicated, documented tool.
+**Default: fail closed.** The only automatic `chain.blocks` mutation is truncating a logged 1-3 byte incomplete next length-prefix tail after a complete frame. No automatic truncate-to-tip, full-frame repair, CRC repair, replay repair, or genesis-backed state rewrite is performed without explicit operator action or a dedicated, documented tool.

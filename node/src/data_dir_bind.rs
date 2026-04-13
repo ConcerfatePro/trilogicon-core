@@ -36,8 +36,8 @@ fn binding_text(hex: &str) -> Result<String, String> {
 }
 
 fn read_binding_and_verify(path: &Path, expected: &str) -> Result<(), String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|e| format!("{PFX_STARTUP} {}: {e}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).map_err(|e| format!("{PFX_STARTUP} {}: {e}", path.display()))?;
     let parsed: BindFile = toml::from_str(&raw).map_err(|e| {
         format!(
             "{PFX_STARTUP} fail-closed: {} invalid genesis bind TOML ({e}); fix or remove file if you intend a new genesis",
@@ -240,7 +240,7 @@ mod tests {
             h.join().unwrap().unwrap();
         }
         verify_or_create_binding(dir.as_ref(), g.as_ref()).unwrap();
-        let _ = fs::remove_dir_all(&dir.as_ref());
+        let _ = fs::remove_dir_all(dir.as_ref());
     }
 
     #[test]
@@ -288,14 +288,13 @@ mod tests {
         let winner = if r1.is_ok() { g1.as_ref() } else { g2.as_ref() };
         verify_or_create_binding(dir.as_ref(), winner).unwrap();
         assert!(
-            verify_or_create_binding(dir.as_ref(), if r1.is_ok() {
-                g2.as_ref()
-            } else {
-                g1.as_ref()
-            })
+            verify_or_create_binding(
+                dir.as_ref(),
+                if r1.is_ok() { g2.as_ref() } else { g1.as_ref() }
+            )
             .is_err()
         );
-        let _ = fs::remove_dir_all(&dir.as_ref());
+        let _ = fs::remove_dir_all(dir.as_ref());
     }
 
     #[test]

@@ -61,9 +61,8 @@ fn encode_pending_payload(txs: &[Transaction]) -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
     for tx in txs {
         let payload = encode_transaction(tx);
-        let len = u32::try_from(payload.len()).map_err(|_| {
-            "encoded transaction length exceeds u32".to_string()
-        })?;
+        let len = u32::try_from(payload.len())
+            .map_err(|_| "encoded transaction length exceeds u32".to_string())?;
         buf.extend_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&payload);
     }
@@ -106,13 +105,10 @@ pub fn append_pending_transaction(path: impl AsRef<Path>, tx: &Transaction) -> s
     let path = path.as_ref();
     let lock_path = pending_queue_lock_path(path);
     let _lock = ExclusiveFileLock::acquire_exclusive(&lock_path).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!(
-                "{PFX_PENDING} fail-closed: could not acquire queue lock {} — {e}",
-                lock_path.display()
-            ),
-        )
+        std::io::Error::other(format!(
+            "{PFX_PENDING} fail-closed: could not acquire queue lock {} — {e}",
+            lock_path.display()
+        ))
     })?;
 
     let payload = encode_transaction(tx);
@@ -334,7 +330,11 @@ mod tests {
         fs::write(&path, &buf).unwrap();
 
         let mut pool = Mempool::new(100);
-        let before_hashes: Vec<_> = pool.clone_fifo().iter().map(|x| x.tx_hash.clone()).collect();
+        let before_hashes: Vec<_> = pool
+            .clone_fifo()
+            .iter()
+            .map(|x| x.tx_hash.clone())
+            .collect();
 
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
         let err = drain_pending_file(&path, &mut pool).expect_err("drain should fail closed");
@@ -470,7 +470,7 @@ mod tests {
         let h_drain = thread::spawn(move || {
             for _ in 0..500 {
                 let mut pool = ps.lock().expect("pool lock");
-                let _ = drain_pending_file(&*p_drain, &mut *pool);
+                let _ = drain_pending_file(&p_drain, &mut pool);
                 thread::yield_now();
             }
         });
@@ -479,7 +479,7 @@ mod tests {
         h_drain.join().unwrap();
 
         let mut pool = pool_shared.lock().expect("pool lock");
-        drain_pending_file(&*path, &mut *pool).unwrap();
+        drain_pending_file(&path, &mut pool).unwrap();
         assert_eq!(
             pool.len(),
             40,

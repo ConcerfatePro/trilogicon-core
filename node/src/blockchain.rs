@@ -251,8 +251,11 @@ impl Blockchain {
         max_transactions: usize,
         timestamp_unix: u64,
     ) -> Result<usize, ProtocolError> {
-        match self.append_block_from_mempool_pending_removal(mempool, max_transactions, timestamp_unix)?
-        {
+        match self.append_block_from_mempool_pending_removal(
+            mempool,
+            max_transactions,
+            timestamp_unix,
+        )? {
             None => Ok(0),
             Some(hashes) => {
                 let n = hashes.len();
@@ -343,7 +346,9 @@ mod tests {
         let signing_key = SigningKey::from_bytes(&[44u8; 32]);
         let verifying_key = signing_key.verifying_key();
         let sender = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
-        chain.state_mut().create_account(sender.clone(), 1_000_000_000);
+        chain
+            .state_mut()
+            .create_account(sender.clone(), 1_000_000_000);
 
         let mut prev = "GENESIS_HASH".to_string();
         for h in 1u64..=30 {

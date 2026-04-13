@@ -129,15 +129,15 @@ impl std::fmt::Display for NetworkBlockPersistFailure {
 #[derive(Debug)]
 pub enum PeerFrameError {
     /// Invalid-block strike budget exhausted — disconnect immediately (do not count as generic protocol error).
-    InvalidBlockBudgetExhausted { max_invalid_network_blocks_per_session: u32 },
+    InvalidBlockBudgetExhausted {
+        max_invalid_network_blocks_per_session: u32,
+    },
     /// Decoded `OP_BLOCK` with `height <= local_tip` exceeded [`InboundPeerPolicy::max_stale_decoded_blocks_per_session`].
     StaleBlockIngressQuotaExhausted {
         max_stale_decoded_blocks_per_session: u32,
     },
     /// Successfully decoded inbound `OP_TX` count exceeded [`InboundPeerPolicy::max_inbound_tx_per_session`].
-    InboundTxIngressQuotaExhausted {
-        max_inbound_tx_per_session: u32,
-    },
+    InboundTxIngressQuotaExhausted { max_inbound_tx_per_session: u32 },
     /// Local persist / poison / rollback — fail-closed for this session.
     LocalFatal(String),
     /// Malformed opcode, decode failure, etc. — counts toward [`InboundPeerPolicy::max_protocol_errors_per_session`].
@@ -293,13 +293,15 @@ impl InboundSlotPool {
             if n >= self.max {
                 return None;
             }
-            match self.active.compare_exchange_weak(
-                n,
-                n + 1,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return Some(InboundPermit { pool: Arc::clone(self) }),
+            match self
+                .active
+                .compare_exchange_weak(n, n + 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => {
+                    return Some(InboundPermit {
+                        pool: Arc::clone(self),
+                    });
+                }
                 Err(x) => n = x,
             }
         }
@@ -321,7 +323,9 @@ impl Drop for InboundPermit {
         loop {
             let c = self.pool.active.load(Ordering::SeqCst);
             if c == 0 {
-                eprintln!("{PFX_PEER} inbound slot release while active count was 0 (should not happen)");
+                eprintln!(
+                    "{PFX_PEER} inbound slot release while active count was 0 (should not happen)"
+                );
                 break;
             }
             if self
@@ -534,8 +538,8 @@ pub fn handshake_initiator(
         .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
     write_framed(stream, &hello)?;
     let resp = read_framed(stream)?;
-    let (op, ver, peer_hex, peer_adv) = decode_session_payload(&resp)
-        .map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
+    let (op, ver, peer_hex, peer_adv) =
+        decode_session_payload(&resp).map_err(|s| io::Error::new(io::ErrorKind::InvalidData, s))?;
     if op != OP_SESSION_HELLO_ACK {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -799,7 +803,9 @@ fn apply_predecoded(
     match decoded {
         PredecodedInbound::Tx(tx) => {
             if let Err(e) = inner.pool.try_submit(tx) {
-                eprintln!("{PFX_PEER} mempool rejected inbound tx ({e}) — peer message dropped, session continues");
+                eprintln!(
+                    "{PFX_PEER} mempool rejected inbound tx ({e}) — peer message dropped, session continues"
+                );
             }
             Ok(None)
         }
@@ -838,8 +844,7 @@ fn apply_predecoded(
                         *invalid_block_strikes = invalid_block_strikes.saturating_add(1);
                         eprintln!(
                             "{PFX_PEER} rejected network block ({failure}) — invalid-block strike {}/{} (local defense)",
-                            *invalid_block_strikes,
-                            policy.max_invalid_network_blocks_per_session
+                            *invalid_block_strikes, policy.max_invalid_network_blocks_per_session
                         );
                         if *invalid_block_strikes >= policy.max_invalid_network_blocks_per_session {
                             return Err(PeerFrameError::InvalidBlockBudgetExhausted {
@@ -858,10 +863,9 @@ fn apply_predecoded(
             }
         }
         PredecodedInbound::GetBlocks { start_height } => {
-            let slice = inner.chain.blocks_from_height_limited(
-                start_height,
-                MAX_BLOCKS_PER_BATCH as usize,
-            );
+            let slice = inner
+                .chain
+                .blocks_from_height_limited(start_height, MAX_BLOCKS_PER_BATCH as usize);
             let encoded = wire_encode_blocks_response(&slice).map_err(|e| {
                 PeerFrameError::Protocol(io::Error::new(io::ErrorKind::InvalidData, e))
             })?;
@@ -873,19 +877,12 @@ fn apply_predecoded(
 fn peer_session_setup(stream: &mut TcpStream, state: &Arc<Mutex<NodeInner>>) -> io::Result<()> {
     let (genesis, height, poisoned) = {
         let g = state.lock().expect("node lock poisoned");
-        (
-            g.genesis.clone(),
-            g.chain.height(),
-            g.store.is_poisoned(),
-        )
+        (g.genesis.clone(), g.chain.height(), g.store.is_poisoned())
     };
     if poisoned {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "{PFX_STORAGE} fail-closed: store poisoned — refusing new inbound session until restart"
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "{PFX_STORAGE} fail-closed: store poisoned — refusing new inbound session until restart"
+        )));
     }
     handshake_responder(stream, &genesis, height)
 }
@@ -1019,7 +1016,7 @@ pub fn peer_connection_loop(
             }
             Err(PeerFrameError::LocalFatal(msg)) => {
                 // Local chain/store failure — fail closed, do not burn wire-error budget.
-                return Err(io::Error::new(io::ErrorKind::Other, msg));
+                return Err(io::Error::other(msg));
             }
             Err(PeerFrameError::Protocol(e)) => {
                 protocol_errors = protocol_errors.saturating_add(1);
@@ -1115,7 +1112,7 @@ pub fn sync_from_peer(
     peer: &str,
     budget: &SyncWorkBudget,
 ) -> Result<SyncFromPeerOutcome, String> {
-    sync_from_peer_with_clock(inner, peer, budget, || unix_now_secs())
+    sync_from_peer_with_clock(inner, peer, budget, unix_now_secs)
 }
 
 pub fn sync_from_peer_with_clock<F: Fn() -> u64>(
@@ -1154,13 +1151,8 @@ pub fn sync_from_peer_with_clock<F: Fn() -> u64>(
 
         let height_now = inner.chain.height();
         let start = height_now.saturating_add(1);
-        let (blocks, nbytes) = pull_blocks_from_peer(
-            peer,
-            start,
-            &inner.genesis,
-            height_now,
-            &timeouts,
-        )?;
+        let (blocks, nbytes) =
+            pull_blocks_from_peer(peer, start, &inner.genesis, height_now, &timeouts)?;
         rounds = rounds.saturating_add(1);
         wire_bytes = wire_bytes.saturating_add(nbytes);
 
@@ -1243,12 +1235,11 @@ pub fn push_block_to_peer_with_timeouts(
     block: &Block,
     timeouts: &OutboundPeerTimeouts,
 ) -> Result<(), String> {
-    let mut stream =
-        tcp_connect_peer(peer).map_err(|e| format!("{PFX_PEER} gossip connect {peer} failed: {e}"))?;
+    let mut stream = tcp_connect_peer(peer)
+        .map_err(|e| format!("{PFX_PEER} gossip connect {peer} failed: {e}"))?;
     apply_outbound_stream_timeouts(&mut stream, timeouts);
-    handshake_initiator(&mut stream, local_genesis, local_advisory_height).map_err(|e| {
-        format!("{PFX_PEER} gossip session handshake with {peer} failed: {e}")
-    })?;
+    handshake_initiator(&mut stream, local_genesis, local_advisory_height)
+        .map_err(|e| format!("{PFX_PEER} gossip session handshake with {peer} failed: {e}"))?;
     let mut msg = vec![OP_BLOCK];
     msg.extend_from_slice(&encode_block(block));
     write_framed(&mut stream, &msg).map_err(|e| e.to_string())
@@ -1276,12 +1267,11 @@ pub fn push_tx_to_peer_with_timeouts(
     tx: &Transaction,
     timeouts: &OutboundPeerTimeouts,
 ) -> Result<(), String> {
-    let mut stream =
-        tcp_connect_peer(peer).map_err(|e| format!("{PFX_PEER} push_tx connect {peer} failed: {e}"))?;
+    let mut stream = tcp_connect_peer(peer)
+        .map_err(|e| format!("{PFX_PEER} push_tx connect {peer} failed: {e}"))?;
     apply_outbound_stream_timeouts(&mut stream, timeouts);
-    handshake_initiator(&mut stream, local_genesis, local_advisory_height).map_err(|e| {
-        format!("{PFX_PEER} push_tx session handshake with {peer} failed: {e}")
-    })?;
+    handshake_initiator(&mut stream, local_genesis, local_advisory_height)
+        .map_err(|e| format!("{PFX_PEER} push_tx session handshake with {peer} failed: {e}"))?;
     let mut msg = vec![OP_TX];
     msg.extend_from_slice(&encode_transaction(tx));
     write_framed(&mut stream, &msg).map_err(|e| e.to_string())
@@ -1507,9 +1497,7 @@ mod tests {
             }
             .counts_toward_invalid_block_budget()
         );
-        assert!(
-            !NetworkBlockPersistFailure::StorePoisoned.counts_toward_invalid_block_budget()
-        );
+        assert!(!NetworkBlockPersistFailure::StorePoisoned.counts_toward_invalid_block_budget());
         assert!(
             !NetworkBlockPersistFailure::MissingTipAfterApply.counts_toward_invalid_block_budget()
         );
@@ -1566,7 +1554,8 @@ mod tests {
             peer_book: PeerBook::default(),
         };
         inner.store.mark_poisoned_for_tests();
-        let err = sync_from_peer(&mut inner, "127.0.0.1:9", &SyncWorkBudget::default()).unwrap_err();
+        let err =
+            sync_from_peer(&mut inner, "127.0.0.1:9", &SyncWorkBudget::default()).unwrap_err();
         assert!(
             err.contains("poisoned") && err.contains("[storage]") && err.contains("fail-closed"),
             "unexpected err: {err}"

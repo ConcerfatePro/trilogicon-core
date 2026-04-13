@@ -180,12 +180,12 @@ Validation must be strict and explicit.
 
 Replay protection is provided primarily through per-account nonces.
 
-Each sender account must submit transactions with the next expected nonce.
+Each sender account must apply transactions with the next expected nonce.
 
-A transaction using an old nonce must be rejected.  
-A transaction skipping ahead past the expected nonce must also be rejected unless future mempool policy explicitly allows waiting transactions.
+A transaction using an old nonce must be rejected during block application.  
+A transaction skipping ahead past the expected nonce must also be rejected during block application, even if local mempool policy holds it for a later seal attempt.
 
-**Not V2:** **speculative future-nonce mempool behavior** (holding or reordering transactions across nonce gaps) is **not** a V2 deliverable—it can change **which valid transactions** reach blocks compared to a reference V1 node and blurs the local-vs-consensus boundary unless defined in a **new protocol version** (`docs/v2_scope.md`). V2 may still do **drop / revalidate / bound** mempool hygiene that **cannot** cause consensus-invalid inclusion.
+**V2 local producer policy:** block validity still rejects skipped nonces inside a block. The reference mempool may keep future-nonce entries and skip currently non-executable entries during local seal candidate scan, but it must never include a transaction before its nonce is expected by simulated state, reorder selected transactions, or make an invalid transaction valid. Nonce sorting, remote-funding speculation, and any change to block validity remain outside V2 (`docs/v2_scope.md`).
 
 This rule ensures that signed transactions cannot simply be replayed repeatedly against the same account state.
 

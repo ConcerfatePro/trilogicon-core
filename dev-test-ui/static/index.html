@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trilogicon — local dev test UI</title>
+  <style>
+    :root { font-family: system-ui, sans-serif; line-height: 1.45; max-width: 52rem; margin: 0 auto; padding: 1rem; color: #111; background: #f6f6f4; }
+    h1 { font-size: 1.15rem; margin-top: 0; }
+    .banner { background: #3d3d00; color: #fffa90; padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-weight: 600; }
+    .subbanner { color: #553; font-size: 0.9rem; margin-bottom: 1.25rem; }
+    nav { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+    nav button { padding: 0.35rem 0.65rem; cursor: pointer; border: 1px solid #888; background: #fff; border-radius: 4px; }
+    nav button.active { background: #222; color: #fff; border-color: #222; }
+    section { display: none; background: #fff; border: 1px solid #ccc; border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+    section.visible { display: block; }
+    pre, .mono { font-family: ui-monospace, monospace; font-size: 0.82rem; white-space: pre-wrap; word-break: break-all; }
+    label { display: block; margin-top: 0.65rem; font-size: 0.85rem; }
+    input[type="text"], input[type="number"] { width: 100%; max-width: 28rem; padding: 0.35rem; margin-top: 0.2rem; box-sizing: border-box; }
+    .err { color: #a00; }
+    .ok { color: #060; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+    th, td { border: 1px solid #ccc; padding: 0.35rem 0.5rem; text-align: left; }
+    th { background: #eee; }
+    button.primary { margin-top: 0.75rem; padding: 0.45rem 1rem; cursor: pointer; background: #224; color: #fff; border: none; border-radius: 4px; }
+    ul.paths { font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="banner">LOCAL TESTING ONLY — not a production wallet — development / operator convenience</div>
+  <p class="subbanner">Bind is localhost-only. This UI reads chain files and queues txs like <span class="mono">node send</span>. Run <span class="mono">node run</span> separately to seal and sync.</p>
+
+  <h1>Trilogicon dev test UI</h1>
+  <nav id="nav">
+    <button type="button" data-page="overview" class="active">Overview</button>
+    <button type="button" data-page="accounts">Accounts</button>
+    <button type="button" data-page="send">Send test transfer</button>
+    <button type="button" data-page="setup">Local setup</button>
+    <button type="button" data-page="activity">Activity</button>
+  </nav>
+
+  <section id="page-overview" class="visible">
+    <h2>Overview</h2>
+    <p id="ov-warning" class="mono err"></p>
+    <p><strong>Data dir:</strong> <span id="ov-datadir" class="mono"></span></p>
+    <p><strong>Height:</strong> <span id="ov-height"></span> &nbsp; <strong>Tip hash:</strong> <span id="ov-tip" class="mono"></span></p>
+    <p id="ov-chain-err" class="err"></p>
+    <p><strong>Pending file (queued txs):</strong> <span id="ov-pending"></span> <span id="ov-pend-err" class="err"></span></p>
+    <p><strong><span class="mono">node run</span> lock:</strong> <span id="ov-runlock"></span></p>
+    <p class="mono" style="font-size:0.8rem;color:#444;" id="ov-mempool-note"></p>
+    <p><strong>Wallet (local seed):</strong> <span id="ov-wallet" class="mono"></span></p>
+    <p><strong>Peer book seeds:</strong> <span id="ov-peers" class="mono"></span></p>
+    <h3>Recent blocks (from disk)</h3>
+    <table id="ov-blocks"><thead><tr><th>h</th><th>txs</th><th>time</th><th>hash</th></tr></thead><tbody></tbody></table>
+    <p><button type="button" class="primary" id="btn-refresh-ov">Refresh</button></p>
+  </section>
+
+  <section id="page-accounts">
+    <h2>Account lookup</h2>
+    <p>Reads committed state from <span class="mono">chain.blocks</span> replay (read-only).</p>
+    <label>Address <input type="text" id="acc-addr" placeholder="receiver address string" /></label>
+    <button type="button" class="primary" id="btn-acc">Look up</button>
+    <p id="acc-out"></p>
+  </section>
+
+  <section id="page-send">
+    <h2>Send test transfer</h2>
+    <p>Uses <span class="mono">wallet.seed</span> in the configured data dir — <strong>development only</strong>. Appends to <span class="mono">pending_tx.tril</span> (same as CLI <span class="mono">node send</span>).</p>
+    <p id="send-wallet-hint" class="mono" style="font-size:0.85rem;background:#f0f0ea;padding:0.5rem;border-radius:4px;"></p>
+    <label>Receiver address <input type="text" id="send-recv" /></label>
+    <label>Amount <input type="number" id="send-amt" min="1" value="1" /></label>
+    <label>Fee <input type="number" id="send-fee" min="0" value="1" /></label>
+
+    <details style="margin-top:1rem;border:1px dashed #888;padding:0.75rem;border-radius:4px;background:#fafafa;">
+      <summary style="cursor:pointer;font-weight:600;">Reject-path testing (stale nonce / gap / insufficient balance)</summary>
+      <p style="font-size:0.85rem;margin:0.5rem 0;color:#333;">Queues <strong>validly signed</strong> txs that the chain may still reject on seal (<span class="mono">InvalidNonce</span>, <span class="mono">InsufficientBalance</span>) or that the mempool may drop on hygiene. Watch <span class="mono">node run</span> stderr (<span class="mono">[mempool]</span>, <span class="mono">[seal]</span>). Not production use.</p>
+      <label style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+        <input type="checkbox" id="send-override-nonce" />
+        Override nonce (sign with this nonce instead of committed next)
+      </label>
+      <label>Nonce value <input type="number" id="send-nonce-val" min="0" value="0" disabled style="max-width:12rem;" /></label>
+      <div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem;">
+        <button type="button" id="btn-preset-stale">Preset: stale nonce (n−1)</button>
+        <button type="button" id="btn-preset-gap">Preset: gap nonce (n+1)</button>
+        <button type="button" id="btn-preset-overspend">Preset: insufficient balance (amount+fee &gt; balance)</button>
+      </div>
+    </details>
+
+    <button type="button" class="primary" id="btn-send">Queue transaction</button>
+    <pre id="send-result"></pre>
+  </section>
+
+  <section id="page-setup">
+    <h2>Local test setup</h2>
+    <p id="setup-warning" class="mono err"></p>
+    <ul class="paths" id="setup-paths"></ul>
+    <h3>Example commands</h3>
+    <pre id="setup-cmds"></pre>
+  </section>
+
+  <section id="page-activity">
+    <h2>Activity</h2>
+    <p>Recent blocks and txs from on-disk chain (not live mempool).</p>
+    <p id="act-error" class="err"></p>
+    <h3>Blocks</h3>
+    <table id="act-blocks"><thead><tr><th>h</th><th>txs</th><th>time</th><th>hash</th></tr></thead><tbody></tbody></table>
+    <h3>Transactions (recent)</h3>
+    <table id="act-txs"><thead><tr><th>hash</th><th>from → to</th><th>amt</th><th>fee</th><th>nonce</th></tr></thead><tbody></tbody></table>
+    <p><button type="button" class="primary" id="btn-refresh-act">Refresh</button></p>
+  </section>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    let walletState = null;
+
+    function showPage(name) {
+      document.querySelectorAll('section').forEach((s) => s.classList.remove('visible'));
+      $('page-' + name).classList.add('visible');
+      document.querySelectorAll('#nav button').forEach((b) => b.classList.toggle('active', b.dataset.page === name));
+      if (name === 'send') loadWalletForSend();
+    }
+    document.querySelectorAll('#nav button').forEach((b) => b.addEventListener('click', () => showPage(b.dataset.page)));
+
+    $('send-override-nonce').addEventListener('change', () => {
+      $('send-nonce-val').disabled = !$('send-override-nonce').checked;
+    });
+
+    async function loadWalletForSend() {
+      const el = $('send-wallet-hint');
+      el.textContent = 'Loading wallet / chain state…';
+      try {
+        const r = await fetch('/api/wallet');
+        walletState = await r.json();
+        if (walletState.error) {
+          el.textContent = 'Wallet/chain: ' + walletState.error;
+          return;
+        }
+        const n = walletState.committed_next_nonce;
+        const b = walletState.balance;
+        el.innerHTML = '<strong>Local wallet</strong> <span class="mono">' + (walletState.address || '') + '</span><br/>' +
+          '<strong>Committed balance</strong> ' + (b != null ? b : '—') + ' &nbsp; <strong>Next nonce</strong> ' + (n != null ? n : '—');
+      } catch (e) {
+        el.textContent = 'Failed to load /api/wallet: ' + e;
+      }
+    }
+
+    $('btn-preset-stale').addEventListener('click', () => {
+      if (!walletState || typeof walletState.committed_next_nonce !== 'number') {
+        alert('Need committed nonce from chain (fix wallet/genesis or refresh).');
+        return;
+      }
+      const n = walletState.committed_next_nonce;
+      if (n === 0) { alert('Next nonce is 0 — cannot use stale n−1. Seal a block first so nonce advances.'); return; }
+      $('send-override-nonce').checked = true;
+      $('send-nonce-val').disabled = false;
+      $('send-nonce-val').value = String(n - 1);
+    });
+    $('btn-preset-gap').addEventListener('click', () => {
+      if (!walletState || typeof walletState.committed_next_nonce !== 'number') {
+        alert('Need committed nonce from chain (open this tab after chain loads).');
+        return;
+      }
+      const n = walletState.committed_next_nonce;
+      $('send-override-nonce').checked = true;
+      $('send-nonce-val').disabled = false;
+      $('send-nonce-val').value = String(n + 1);
+    });
+    $('btn-preset-overspend').addEventListener('click', () => {
+      if (!walletState || typeof walletState.balance !== 'number') {
+        alert('Need balance from chain.');
+        return;
+      }
+      const b = walletState.balance;
+      if (b === 0) { alert('Balance is 0 — fund the account in genesis first.'); return; }
+      const feeInput = Number($('send-fee').value);
+      const fee = (!Number.isFinite(feeInput) || feeInput < 1) ? 1 : Math.floor(feeInput);
+      $('send-override-nonce').checked = false;
+      $('send-nonce-val').disabled = true;
+      $('send-amt').value = String(b);
+      $('send-fee').value = String(fee);
+    });
+
+    async function loadOverview() {
+      const r = await fetch('/api/overview');
+      const j = await r.json();
+      $('ov-warning').textContent = j.warning || '';
+      $('ov-datadir').textContent = j.data_dir || '';
+      $('ov-height').textContent = j.height ?? '—';
+      $('ov-tip').textContent = j.tip_hash || '—';
+      $('ov-chain-err').textContent = j.chain_error || '';
+      $('ov-pending').textContent = j.pending_tx_count != null ? j.pending_tx_count : '—';
+      $('ov-pend-err').textContent = j.pending_error || '';
+      $('ov-runlock').textContent = j.node_run_active ? 'held (another process may be running `node run`)' : 'not held (no active run lock on this data dir)';
+      $('ov-mempool-note').textContent = j.mempool_note || '';
+      $('ov-wallet').textContent = j.wallet_address || '(no wallet.seed)';
+      $('ov-peers').textContent = (j.peer_seed_addrs && j.peer_seed_addrs.length) ? j.peer_seed_addrs.join(', ') : '(none or unreadable)';
+      const tb = $('ov-blocks').querySelector('tbody');
+      tb.innerHTML = '';
+      (j.blocks || []).forEach((b) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + b.height + '</td><td>' + b.tx_count + '</td><td>' + b.timestamp_unix + '</td><td class="mono">' + b.block_hash + '</td>';
+        tb.appendChild(tr);
+      });
+    }
+
+    async function loadSetup() {
+      const r = await fetch('/api/setup');
+      const j = await r.json();
+      $('setup-warning').textContent = j.warning || '';
+      const ul = $('setup-paths');
+      ul.innerHTML = '';
+      const p = j.paths || {};
+      for (const [k, v] of Object.entries(p)) {
+        const li = document.createElement('li');
+        li.innerHTML = '<strong>' + k + ':</strong> <span class="mono">' + v + '</span>';
+        ul.appendChild(li);
+      }
+      $('setup-cmds').textContent = (j.example_commands || []).join('\n');
+    }
+
+    async function loadActivity() {
+      const r = await fetch('/api/activity');
+      const j = await r.json();
+      $('act-error').textContent = j.error || '';
+      const tb = $('act-blocks').querySelector('tbody');
+      tb.innerHTML = '';
+      (j.blocks || []).forEach((b) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td>' + b.height + '</td><td>' + b.tx_count + '</td><td>' + b.timestamp_unix + '</td><td class="mono">' + b.block_hash + '</td>';
+        tb.appendChild(tr);
+      });
+      const tt = $('act-txs').querySelector('tbody');
+      tt.innerHTML = '';
+      (j.recent_txs || []).forEach((t) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td class="mono">' + t.tx_hash + '</td><td class="mono">' + t.sender + ' → ' + t.receiver + '</td><td>' + t.amount + '</td><td>' + t.fee + '</td><td>' + t.nonce + '</td>';
+        tt.appendChild(tr);
+      });
+    }
+
+    $('btn-refresh-ov').addEventListener('click', loadOverview);
+    $('btn-refresh-act').addEventListener('click', loadActivity);
+
+    $('btn-acc').addEventListener('click', async () => {
+      const addr = $('acc-addr').value.trim();
+      if (!addr) { $('acc-out').innerHTML = '<span class="err">Enter an address</span>'; return; }
+      const r = await fetch('/api/account?addr=' + encodeURIComponent(addr));
+      const j = await r.json();
+      if (j.error) { $('acc-out').innerHTML = '<span class="err">' + j.error + '</span>'; return; }
+      if (!j.found) { $('acc-out').innerHTML = 'No account for <span class="mono">' + j.address + '</span> (not on ledger after genesis + blocks).'; return; }
+      $('acc-out').innerHTML = '<strong>Balance:</strong> ' + j.balance + ' &nbsp; <strong>Nonce:</strong> ' + j.nonce;
+    });
+
+    $('btn-send').addEventListener('click', async () => {
+      const body = {
+        receiver: $('send-recv').value.trim(),
+        amount: Number($('send-amt').value),
+        fee: Number($('send-fee').value),
+      };
+      if ($('send-override-nonce').checked) {
+        const nv = Number($('send-nonce-val').value);
+        if (!Number.isFinite(nv) || nv < 0) { $('send-result').textContent = 'Invalid nonce'; return; }
+        body.nonce = Math.floor(nv);
+      }
+      $('send-result').textContent = '…';
+      const r = await fetch('/api/send', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const j = await r.json();
+      $('send-result').textContent = JSON.stringify(j, null, 2);
+      if (j.ok) { loadOverview(); loadWalletForSend(); }
+    });
+
+    loadOverview();
+    loadSetup();
+  </script>
+</body>
+</html>

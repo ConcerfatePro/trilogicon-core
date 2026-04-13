@@ -3,27 +3,21 @@
 
 ## Overview
 
-This roadmap is intended to guide Trilogicon through a disciplined V1 build process.
+This roadmap records how the project was phased historically (**V1** foundation) and where responsibility sits now.
 
-The goal is not to rush features.  
-The goal is to establish a reliable foundation.
+- **V1** — Secure value-transfer baseline: accounts, signed transfers, blocks, deterministic validation, basic sync. **Implementation complete** per [`v1_checkpoint.md`](v1_checkpoint.md).
+- **V2** — Node hardening on the **same** V1 protocol: persistence, restart safety, TCP session/sync robustness, local mempool policy, operator messaging. **Reference node complete** per [`v2_checkpoint.md`](v2_checkpoint.md); scope definition in [`v2_scope.md`](v2_scope.md).
+- **V3+** — **Planning** lives in [`v3_scope.md`](v3_scope.md); **not** the active implementation track on `main` until approved. Code that changes consensus or fork choice requires an explicit protocol delta and checklist—not silent `main` drift.
 
-**V2 planning** (reliability, sync, persistence, operations—**not** consensus reinvention) lives in [`v2_scope.md`](v2_scope.md).
+The goal is not to rush features; it is to keep **honest boundaries** between protocol versions and node implementation quality.
 
-## Current progress snapshot
+## Current progress snapshot (main)
 
-- Phase 0 docs are in place (`vision`, `v1_scope`, `protocol_overview`, `design_principles`, `protocol_invariants`, `architecture`, `change_policies`).
-- Phase 2 transaction validation baseline is implemented with tests:
-  - deterministic unsigned payload hashing
-  - Ed25519 signature verification
-  - sender-to-public-key binding checks
-- Phase 4 state transition baseline is implemented with tests:
-  - valid transfer updates balances and sender nonce
-  - stale nonce rejection without state mutation
-  - insufficient balance rejection without state mutation
-  - missing sender account rejection
+- **Protocol core (V1):** Frozen for the V1 scope; see [`v1_scope.md`](v1_scope.md).
+- **Reference node (V2):** Hardening line merged and stabilized on `main`; CI runs `fmt`, `clippy -D warnings`, and `cargo test` on Linux, Windows, and macOS (see [`v2_checkpoint.md`](v2_checkpoint.md)).
+- **After V2.0.0 tag:** Maintenance per [`v2_freeze.md`](v2_freeze.md); release notes [`releases/v2.0.0.md`](releases/v2.0.0.md). **Next decisions:** V2.1 polish, larger test matrices, or **V3** implementation (only after [`v3_scope.md`](v3_scope.md) + chain-rules spec).
 
-Next primary target: Phase 3 block validation tests, then incremental chain-level validation hardening.
+The **phase sections below** remain as a **historical** map of how V1 was built; they are not a literal “current sprint board.”
 
 ---
 

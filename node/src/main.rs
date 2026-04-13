@@ -16,9 +16,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use node::data_dir_bind::{self, GENESIS_BIND_LOCK_FILE, NODE_RUN_LOCK_FILE};
@@ -26,11 +26,11 @@ use node::file_lock::ExclusiveFileLock;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::{InboundPeerPolicy, NodeInner, SyncWorkBudget};
-use node::operator_msg::{PFX_MEMPOOL, PFX_PENDING, PFX_PEER, PFX_SEAL, PFX_STARTUP, PFX_STORAGE, PFX_SYNC};
-use node::pending_tx_file::{
-    append_pending_transaction, drain_pending_file, PENDING_TX_LOCK_FILE,
+use node::operator_msg::{
+    PFX_MEMPOOL, PFX_PEER, PFX_PENDING, PFX_SEAL, PFX_STARTUP, PFX_STORAGE, PFX_SYNC,
 };
 use node::peer_book::PeerBook;
+use node::pending_tx_file::{PENDING_TX_LOCK_FILE, append_pending_transaction, drain_pending_file};
 use node::storage::{BlockStore, load_blockchain_from_disk};
 use node::types::Address;
 use node::wallet::Wallet;
@@ -203,9 +203,9 @@ fn parse_run_args(
                 let v = args
                     .get(i + 1)
                     .ok_or_else(|| "--max-inbound-peers needs a value".to_string())?;
-                let n: u64 = v
-                    .parse()
-                    .map_err(|_| "--max-inbound-peers must be a non-negative integer".to_string())?;
+                let n: u64 = v.parse().map_err(|_| {
+                    "--max-inbound-peers must be a non-negative integer".to_string()
+                })?;
                 peer_policy.max_concurrent_sessions =
                     usize::try_from(n).map_err(|_| "--max-inbound-peers too large".to_string())?;
                 i += 2;
@@ -214,9 +214,9 @@ fn parse_run_args(
                 let v = args
                     .get(i + 1)
                     .ok_or_else(|| "--peer-idle-timeout-secs needs a value".to_string())?;
-                let n: u64 = v
-                    .parse()
-                    .map_err(|_| "--peer-idle-timeout-secs must be a positive integer".to_string())?;
+                let n: u64 = v.parse().map_err(|_| {
+                    "--peer-idle-timeout-secs must be a positive integer".to_string()
+                })?;
                 if n == 0 {
                     return Err("--peer-idle-timeout-secs must be >= 1".into());
                 }
@@ -434,12 +434,18 @@ fn cmd_send(
     let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     data_dir_bind::verify_binding_if_present(data_dir, &genesis)?;
     let chain_path = data_dir.join(CHAIN_FILE);
-    let (chain, _repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
+    let (chain, repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
         format!(
             "{PFX_STARTUP} fail-closed: could not load chain {} — {e}. Repair or replace chain.blocks if corrupt or truncated. See docs/design_notes/v2_persistence_restart.md",
             chain_path.display()
         )
     })?;
+    if repaired {
+        eprintln!(
+            "{PFX_STORAGE} repaired {}: truncated an incomplete length-prefix tail (<4 bytes) after the last complete block frame",
+            chain_path.display()
+        );
+    }
     data_dir_bind::ensure_binding_if_missing(data_dir, &genesis)?;
     let nonce = chain
         .state()
@@ -464,16 +470,31 @@ fn cmd_send(
 const GOSSIP_FAIL_THRESHOLD: u32 = 5;
 const GOSSIP_COOLDOWN_SECS: u64 = 45;
 
-fn cmd_run(
-    data_dir: &Path,
-    genesis_flag: Option<&str>,
+struct RunConfig {
+    data_dir: PathBuf,
+    genesis_flag: Option<String>,
     interval_secs: u64,
     listen: Option<String>,
     peers: Vec<String>,
     max_future_drift_secs: Option<u64>,
     inbound_peer_policy: InboundPeerPolicy,
     mempool_capacity: usize,
-) -> Result<(), String> {
+}
+
+fn cmd_run(config: RunConfig) -> Result<(), String> {
+    let RunConfig {
+        data_dir,
+        genesis_flag,
+        interval_secs,
+        listen,
+        peers,
+        max_future_drift_secs,
+        inbound_peer_policy,
+        mempool_capacity,
+    } = config;
+    let data_dir = data_dir.as_path();
+    let genesis_flag = genesis_flag.as_deref();
+
     fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
 
     let run_lock_path = data_dir.join(NODE_RUN_LOCK_FILE);
@@ -498,12 +519,18 @@ fn cmd_run(
     data_dir_bind::verify_binding_if_present(data_dir, &genesis)?;
     let chain_path = data_dir.join(CHAIN_FILE);
     let pending_path = data_dir.join(PENDING_TX_FILE);
-    let (mut chain, _repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
+    let (mut chain, repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
         format!(
             "{PFX_STARTUP} fail-closed: could not load chain {} — {e}. Repair or replace chain.blocks if corrupt or truncated. See docs/design_notes/v2_persistence_restart.md",
             chain_path.display()
         )
     })?;
+    if repaired {
+        eprintln!(
+            "{PFX_STORAGE} repaired {}: truncated an incomplete length-prefix tail (<4 bytes) after the last complete block frame",
+            chain_path.display()
+        );
+    }
     data_dir_bind::ensure_binding_if_missing(data_dir, &genesis)?;
     if let Some(d) = max_future_drift_secs {
         chain.consensus_params_mut().max_future_drift_secs = d;
@@ -645,11 +672,7 @@ fn cmd_run(
                 );
             }
             let seal_result = if sealing_allowed {
-                let NodeInner {
-                    chain,
-                    pool,
-                    ..
-                } = &mut *g;
+                let NodeInner { chain, pool, .. } = &mut *g;
                 chain.append_block_from_mempool_pending_removal(pool, 64, now)
             } else {
                 Ok(None)
@@ -676,7 +699,7 @@ fn cmd_run(
                                     "{PFX_STORAGE} FATAL: persist block failed ({e}); in-memory rollback failed ({r}) — disk and memory may disagree; stop and repair chain.blocks"
                                 );
                                 return Err(
-                                    "chain.blocks persist failed and rollback failed".into(),
+                                    "chain.blocks persist failed and rollback failed".into()
                                 );
                             }
                             eprintln!(
@@ -737,10 +760,7 @@ fn cmd_run(
             let adv = block.height;
             let now_g = unix_now_secs();
             for p in &peers_for_gossip {
-                if gossip_cooldown_until
-                    .get(p)
-                    .is_some_and(|&t| t > now_g)
-                {
+                if gossip_cooldown_until.get(p).is_some_and(|&t| t > now_g) {
                     continue;
                 }
                 match node::network::push_block_to_peer(p, &gossip_genesis, adv, block) {
@@ -748,7 +768,9 @@ fn cmd_run(
                         gossip_fail_streak.remove(p);
                     }
                     Err(e) => {
-                        eprintln!("{PFX_PEER} gossip to {p} failed: {e} — peer may be down (not local corruption)");
+                        eprintln!(
+                            "{PFX_PEER} gossip to {p} failed: {e} — peer may be down (not local corruption)"
+                        );
                         let streak = gossip_fail_streak.entry(p.clone()).or_insert(0);
                         *streak = streak.saturating_add(1);
                         if *streak >= GOSSIP_FAIL_THRESHOLD {
@@ -782,16 +804,16 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         "run" => {
             let (dir, genesis, interval, listen, peers, max_future, peer_policy, mempool_cap) =
                 parse_run_args(&args[2..])?;
-            cmd_run(
-                &dir,
-                genesis.as_deref(),
-                interval,
+            cmd_run(RunConfig {
+                data_dir: dir,
+                genesis_flag: genesis,
+                interval_secs: interval,
                 listen,
                 peers,
-                max_future,
-                peer_policy,
-                mempool_cap,
-            )
+                max_future_drift_secs: max_future,
+                inbound_peer_policy: peer_policy,
+                mempool_capacity: mempool_cap,
+            })
         }
         "send" => {
             let (dir, genesis, rest) = parse_send_args(&args[2..])?;
@@ -814,6 +836,26 @@ fn run_cli(args: &[String]) -> Result<(), String> {
         _ => {
             usage(bin);
             Err("unknown command".into())
+        }
+    }
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() >= 2 && matches!(args[1].as_str(), "-h" | "--help" | "help") {
+        let bin = Path::new(&args[0])
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("node");
+        usage(bin);
+        return;
+    }
+
+    match run_cli(&args) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
         }
     }
 }
@@ -848,25 +890,5 @@ mod run_args_tests {
     fn mempool_capacity_rejects_above_max() {
         let over = format!("{}", MAX_MEMPOOL_CAPACITY + 1);
         assert!(parse_run_args(&args(&["--mempool-capacity", &over])).is_err());
-    }
-}
-
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() >= 2 && matches!(args[1].as_str(), "-h" | "--help" | "help") {
-        let bin = Path::new(&args[0])
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("node");
-        usage(bin);
-        return;
-    }
-
-    match run_cli(&args) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
     }
 }

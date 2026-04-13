@@ -12,29 +12,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
-#[cfg(test)]
-use std::cell::Cell;
-
-// Thread-local: the next `append_payload` on this test thread fails once when set (unit tests only).
-#[cfg(test)]
-thread_local! {
-    static TEST_INJECT_APPEND_FAIL: Cell<bool> = const { Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(crate) fn test_set_inject_append_fail(v: bool) {
-    TEST_INJECT_APPEND_FAIL.with(|c| c.set(v));
-}
-
-#[cfg(test)]
-fn test_inject_append_take() -> bool {
-    TEST_INJECT_APPEND_FAIL.with(|c| {
-        let t = c.get();
-        c.set(false);
-        t
-    })
-}
-
 use crate::block::Block;
 use crate::blockchain::Blockchain;
 use crate::encoding::{EncodeError, decode_block, encode_block};
@@ -174,13 +151,10 @@ impl BlockStore {
     /// torn-record risk vs separate length/payload syscalls.
     pub fn append_payload(&mut self, payload: &[u8]) -> io::Result<()> {
         if self.poisoned {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "{} fail-closed: refusing chain.blocks append after a prior write/sync failure (on-disk state may be inconsistent — stop and repair or restore chain.blocks)",
-                    crate::operator_msg::PFX_STORAGE
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "{} fail-closed: refusing chain.blocks append after a prior write/sync failure (on-disk state may be inconsistent — stop and repair or restore chain.blocks)",
+                crate::operator_msg::PFX_STORAGE
+            )));
         }
         let len = u32::try_from(payload.len()).map_err(|_| {
             io::Error::new(
@@ -243,10 +217,7 @@ impl BlockStore {
         let (format, body) = if data.len() >= CHAIN_FILE_MAGIC_V2.len()
             && data[..CHAIN_FILE_MAGIC_V2.len()] == *CHAIN_FILE_MAGIC_V2
         {
-            (
-                ChainFileFormat::V2,
-                &data[CHAIN_FILE_MAGIC_V2.len()..],
-            )
+            (ChainFileFormat::V2, &data[CHAIN_FILE_MAGIC_V2.len()..])
         } else {
             (ChainFileFormat::Legacy, data.as_slice())
         };
@@ -348,9 +319,9 @@ fn parse_v2_block_frames_prefix(data: &[u8]) -> Result<(Vec<Block>, usize), Stor
         if len as u32 > MAX_FRAME_BYTES {
             return Err(StorageError::Decode("frame exceeds max size (v2)".into()));
         }
-        let end_payload = pos.checked_add(len).ok_or_else(|| {
-            StorageError::Decode("v2 frame length overflow".into())
-        })?;
+        let end_payload = pos
+            .checked_add(len)
+            .ok_or_else(|| StorageError::Decode("v2 frame length overflow".into()))?;
         if end_payload + 4 > data.len() {
             return Ok((out, frame_start));
         }
@@ -411,11 +382,13 @@ fn parse_v2_block_frames(data: &[u8]) -> Result<Vec<Block>, StorageError> {
         if len as u32 > MAX_FRAME_BYTES {
             return Err(StorageError::Decode("frame exceeds max size (v2)".into()));
         }
-        let end_payload = pos.checked_add(len).ok_or_else(|| {
-            StorageError::Decode("v2 frame length overflow".into())
-        })?;
+        let end_payload = pos
+            .checked_add(len)
+            .ok_or_else(|| StorageError::Decode("v2 frame length overflow".into()))?;
         if end_payload + 4 > data.len() {
-            return Err(StorageError::Decode("truncated v2 frame (crc or body)".into()));
+            return Err(StorageError::Decode(
+                "truncated v2 frame (crc or body)".into(),
+            ));
         }
         let payload = &data[pos..end_payload];
         let stored_crc = u32::from_be_bytes([

@@ -279,7 +279,7 @@ fn pending_concurrent_public_appends_integration_parse_clean() {
             for j in 0..15usize {
                 let mut tx = Transaction {
                     sender: Address::new(Crypto::address_from_public_key(&vk.to_bytes())),
-                    receiver: Address::new(&format!("ix_{tid}_{j}")),
+                    receiver: Address::new(format!("ix_{tid}_{j}")),
                     amount: 1,
                     fee: 1,
                     nonce: j as u64,
@@ -366,14 +366,13 @@ fn genesis_concurrent_different_binding_integration_one_wins() {
     let winner = if r1.is_ok() { g1.as_ref() } else { g2.as_ref() };
     verify_or_create_binding(dir.as_ref(), winner).unwrap();
     assert!(
-        verify_or_create_binding(dir.as_ref(), if r1.is_ok() {
-            g2.as_ref()
-        } else {
-            g1.as_ref()
-        })
+        verify_or_create_binding(
+            dir.as_ref(),
+            if r1.is_ok() { g2.as_ref() } else { g1.as_ref() }
+        )
         .is_err()
     );
-    let _ = fs::remove_dir_all(&dir.as_ref());
+    let _ = fs::remove_dir_all(dir.as_ref());
 }
 
 #[test]

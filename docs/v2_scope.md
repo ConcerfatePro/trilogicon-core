@@ -1,6 +1,10 @@
 # Trilogicon V2 — Scope and planning
 
-**Status:** canonical V2 definition for the reference node. V1 is the completed baseline (`docs/v1_scope.md`, `docs/v1_checkpoint.md`). Checklists below track **release alignment** (what shipped vs backlog), not hypothetical future work only.
+**Status:** canonical V2 definition for the reference node. V1 is the completed baseline (`docs/v1_scope.md`, `docs/v1_checkpoint.md`). **Closure criteria** for the V2 implementation line on `main`: [`v2_checkpoint.md`](v2_checkpoint.md).
+
+**Release freeze:** After the **V2.0.0** git tag (see [`releases/v2.0.0.md`](releases/v2.0.0.md)), the V2 line is **frozen** per [`v2_freeze.md`](v2_freeze.md): no consensus semantics changes under the V2 name; maintenance and V2.1 polish only. **Next protocol era:** [`v3_scope.md`](v3_scope.md) (planning only until explicitly approved for implementation).
+
+Checklists below track **release alignment** (what shipped vs backlog), not hypothetical future work only.
 
 ---
 
@@ -63,8 +67,8 @@ Use this table before merging any V2 change. When in doubt, treat the item as **
 | **Chain ID in signed transactions** | **Consensus-sensitive / out of V2** |
 | **Fork choice / reorg** | **Consensus-sensitive / out of V2** |
 | **Fee routing** (pay proposer, pool, etc.) | **Consensus-sensitive / out of V2** |
-| **Speculative future-nonce mempool** (holding gap nonces in hope of inclusion) | **Consensus-sensitive / out of V2** if it can change **which** valid txs appear in produced blocks vs a reference V1 node; pure **drop/revalidate** of already-invalid-or-stale txs is [in scope](#in-scope) |
-| **Auto repair / silent truncation** of `chain.blocks` or state | **Consensus-sensitive / out of V2** unless specification proves equivalence to replay from genesis; default is **fail closed** and operator-directed recovery |
+| **Future-nonce block inclusion / nonce sorting** | **Consensus-sensitive / out of V2** if it includes a tx before its nonce is expected by simulated state, reorders selected txs, or changes block validity. The reference node may keep local gap txs and skip currently non-executable entries during candidate scan; that is local producer policy only and never makes an invalid tx valid. |
+| **Auto repair / silent truncation** of `chain.blocks` or state | **Consensus-sensitive / out of V2** unless specification proves equivalence to replay from genesis. V2 permits only the logged 1-3 byte incomplete length-prefix tail cleanup documented below; otherwise recovery is fail-closed and operator-directed. |
 
 ---
 
@@ -92,7 +96,7 @@ No handshake field may imply a **new** block or transaction validity rule withou
 ### Block file recovery (`chain.blocks`)
 
 - **Default: fail closed.** Corruption, truncation, or decode failure → **refuse** to treat the file as authoritative committed history.
-- **No silent auto-repair** (no implicit truncate-to-tip, no rewrite without operator intent). Recovery is **explicit operator action** or a documented **opt-in** tool.
+- **Only narrow automatic tail cleanup:** after at least one complete block frame, a trailing 1-3 byte incomplete next length prefix may be truncated because it cannot contain a decodable frame and replay from the last complete frame is equivalent. The operator path logs this repair. Any full length prefix, partial body/CRC, decode error, CRC mismatch, or replay error still fails closed.
 
 ### `pending_tx.tril` restart semantics
 
@@ -121,7 +125,7 @@ No handshake field may imply a **new** block or transaction validity rule withou
 
 ## Producer-side mempool rule (V2)
 
-Block building **stays aligned with V1 `append_block_from_mempool`**: take a **FIFO prefix** of the mempool (up to `max_transactions`), then attempt **one atomic seal**—**all** transactions in that prefix commit in **one** block **in order**, or **none** do (the mempool is **unchanged** for that failed attempt). **V2 mempool hygiene** removes stale or invalid transactions **before** this step (revalidation, explicit drops, logging). V2 **does not** add **in-seal skipping** (e.g. omitting the head transaction but including a later one in the **same** seal pass). Changing that would be a **protocol / producer** behavior change, not silent hardening.
+Block building walks mempool FIFO order against a cloned chain state and selects a FIFO-ordered executable subsequence up to `max_transactions`. It may skip entries that are not executable yet (for example a future-nonce gap or missing sender) without removing them. It must **not** reorder selected transactions, include a transaction before its nonce is expected by the simulated state, or skip past a stale nonce / expected-next transaction that fails `State::apply_transaction` (for example insufficient balance). The final block append remains atomic: all selected transactions commit in order, or none do. This is local producer selection only; received blocks are still accepted or rejected by unchanged V1 `append_block` / `try_append_network_block` rules.
 
 ---
 
@@ -196,18 +200,18 @@ Checklist items are targets grouped by area; **implementation order** follows [S
 - [x] **Invalid decodable-block budget** per inbound session (`max_invalid_network_blocks_per_session`); stale low-height blocks do not consume that budget (separate stale quota above).
 - [x] **Typed** `OP_BLOCK` append failures (`NetworkBlockPersistFailure`) and post-handshake frame errors (`PeerFrameError`) — strike/budget/disconnect decisions do not scan error-message substrings.
 - [x] **Shorter `NodeInner` lock on inbound peers** — opcode classification + `decode_transaction` / `decode_block` / `GET_BLOCKS` length parse in `predecode_inbound_app_payload` **before** the mutex; tip comparison, ingress quotas, strikes, mempool submit, append/persist, and block-batch encoding **under** the lock.
-- [ ] Ensure defense layers **drop work** but do not reinterpret validity.
+- [x] Ensure defense layers **drop work** but do not reinterpret validity — typed ingress quotas / frame errors decide local disconnects; accepted blocks still enter through `try_append_network_block`.
 
 ### Mempool (local policy only)
 
-- [x] **Purge FIFO head vs committed ledger** before seal and after failed seal (`purge_nonviable_under_committed_state`); honest policy: no queuing for future remote funding; no in-seal skipping / no future-nonce speculation; document mid-prefix atomic seal stuck case.
+- [x] **Purge FIFO head vs committed ledger** before seal and after failed seal (`purge_nonviable_under_committed_state`); honest policy: no queuing for future remote funding; seal candidate scan may skip currently non-executable entries but cannot include invalid txs or reorder selected txs; expected-nonce apply failures remain atomic/stuck.
 - [x] **Bound queue** — `--mempool-capacity` on `run` (default 10_000, max 1_000_000); **broader local drops** — `drop_stale_nonces_vs_committed` after FIFO purge; hygiene also after inbound block persist and after sync catch-up.
-- [ ] No **future-nonce speculation** or producer behavior that diverges from V1 validity expectations.
+- [x] No **future-nonce inclusion**, nonce sorting, or producer behavior that diverges from V1 block validity expectations.
 
 ### Observability and configuration
 
 - [x] Subsystem-tagged stderr / clearer failure strings for startup, storage, sync, peer, mempool, seal, pending (`operator_msg`, `README` *Interpreting stderr*).
-- [ ] Log levels and structured fields (beyond tagged eprintln).
+- [ ] **Deferred to V2.1:** Log levels and structured fields (beyond tagged eprintln); tagged stderr is the V2 release behavior.
 - [x] **Key operator flags** documented in `README.md` (peer limits, drift contract, mempool capacity, persistence behavior); **consensus-sensitive** knobs called out (`--max-future-drift-secs` deployment-wide contract).
 
 ### Tests and release
@@ -254,6 +258,10 @@ Observability is **early only** insofar as it helps steps 2–5; it does **not**
 
 ## Related documents
 
+- `docs/v2_freeze.md` — what stops changing after the V2 release tag; allowed maintenance.
+- `docs/releases/v2.0.0.md` — release notes for the V2.0.0 tag.
+- `docs/v3_scope.md` — V3 planning (consensus / chain rules); **not** implemented until approved.
+- `docs/v2_checkpoint.md` — what V2 delivered, verification bar, deferrals, gate before V3 planning becomes implementation.
 - `docs/design_notes/v2_persistence_restart.md` — persistence, `pending_tx.tril`, recovery, startup vs peer actions.
 - `docs/design_notes/v2_wire_peer_sync.md` — TCP session handshake, linear sync batch rules, defensive caps.
 - `docs/vision.md` — long-term version ladder.

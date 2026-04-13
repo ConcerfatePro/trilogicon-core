@@ -73,7 +73,14 @@ fn sign_transfer(
     tx
 }
 
-fn seal_block(sk: &SigningKey, sender: &Address, prev_hash: &str, height: u64, nonce: u64, ts: u64) -> Block {
+fn seal_block(
+    sk: &SigningKey,
+    sender: &Address,
+    prev_hash: &str,
+    height: u64,
+    nonce: u64,
+    ts: u64,
+) -> Block {
     let tx = sign_transfer(sk, sender, "recv_rmx", 1, 1, nonce, ts);
     let mut b = Block {
         height,
@@ -125,7 +132,10 @@ fn replay_equivalence_multiblock_reload_matches_built_chain() {
 
     let (loaded, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(loaded.height(), 3);
-    assert_eq!(loaded.blocks().last().unwrap().block_hash, chain.blocks().last().unwrap().block_hash);
+    assert_eq!(
+        loaded.blocks().last().unwrap().block_hash,
+        chain.blocks().last().unwrap().block_hash
+    );
     assert_eq!(
         loaded.state().accounts_sorted(),
         chain.state().accounts_sorted()

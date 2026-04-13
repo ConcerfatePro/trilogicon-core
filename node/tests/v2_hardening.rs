@@ -16,10 +16,10 @@ use node::encoding::encode_block;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::{
-    encode_session_payload, handshake_initiator, read_framed, serve_tcp_listener, sync_from_peer,
-    sync_from_peer_with_clock, validate_sync_work_budget, wire_encode_blocks_response,
-    write_framed, InboundPeerPolicy, InboundSlotPool, NodeInner, OutboundPeerTimeouts, OP_BLOCK,
-    OP_SESSION_HELLO_ACK, SyncWorkBudget,
+    InboundPeerPolicy, InboundSlotPool, NodeInner, OP_BLOCK, OP_SESSION_HELLO_ACK,
+    OutboundPeerTimeouts, SyncWorkBudget, encode_session_payload, handshake_initiator, read_framed,
+    serve_tcp_listener, sync_from_peer, sync_from_peer_with_clock, validate_sync_work_budget,
+    wire_encode_blocks_response, write_framed,
 };
 use node::storage::BlockStore;
 use node::transaction::Transaction;
@@ -83,8 +83,8 @@ fn build_three_blocks(g: &Genesis, wa: &Wallet, wb: &Wallet) -> Vec<Block> {
 /// `write_all`; with [`OutboundPeerTimeouts::write`] set, that surfaces as a timeout (local I/O policy).
 #[test]
 fn outbound_large_payload_write_times_out_when_peer_never_drains() {
-    use std::io::Write;
     use node::network::{apply_outbound_stream_timeouts, handshake_initiator, tcp_connect_peer};
+    use std::io::Write;
 
     let (g, _, _) = genesis_two_wallets();
 
@@ -584,20 +584,24 @@ fn mempool_purge_unblocks_seal_after_state_advances() {
     let good = wa.sign_transfer(wb.address(), 1, 1, 1, 2_000_003).unwrap();
     pool.try_submit(good).unwrap();
 
-    assert!(chain
-        .append_block_from_mempool_pending_removal(&mut pool, 8, 2_000_004)
-        .is_err());
+    assert!(
+        chain
+            .append_block_from_mempool_pending_removal(&pool, 8, 2_000_004)
+            .is_err()
+    );
     let n = pool.purge_nonviable_under_committed_state(chain.state());
     assert_eq!(n, 1);
-    assert!(chain
-        .append_block_from_mempool_pending_removal(&mut pool, 8, 2_000_005)
-        .unwrap()
-        .is_some());
+    assert!(
+        chain
+            .append_block_from_mempool_pending_removal(&pool, 8, 2_000_005)
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(chain.height(), 2);
 }
 
-/// Atomic FIFO-prefix seal tries the whole prefix in one block; a valid head + invalid second tx
-/// leaves the queue stuck — `purge_nonviable_under_committed_state` does not skip mid-queue (deferred).
+/// Candidate selection cannot skip past an expected-next tx that fails state application; a valid
+/// earlier selected tx + invalid second tx leaves the queue stuck until broader policy changes.
 #[test]
 fn fifo_prefix_seal_failure_with_valid_head_not_solved_by_committed_purge() {
     let wa = Wallet::from_seed(&[80u8; 32]);
@@ -621,12 +625,16 @@ fn fifo_prefix_seal_failure_with_valid_head_not_solved_by_committed_purge() {
     pool.try_submit(t0).unwrap();
     pool.try_submit(t1).unwrap();
 
-    assert!(chain
-        .append_block_from_mempool_pending_removal(&mut pool, 8, 2_100_002)
-        .is_err());
+    assert!(
+        chain
+            .append_block_from_mempool_pending_removal(&pool, 8, 2_100_002)
+            .is_err()
+    );
     assert_eq!(pool.purge_nonviable_under_committed_state(chain.state()), 0);
-    assert!(chain
-        .append_block_from_mempool_pending_removal(&mut pool, 8, 2_100_003)
-        .is_err());
+    assert!(
+        chain
+            .append_block_from_mempool_pending_removal(&pool, 8, 2_100_003)
+            .is_err()
+    );
     assert_eq!(pool.len(), 2);
 }

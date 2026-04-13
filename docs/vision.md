@@ -57,7 +57,7 @@ A simple and secure transfer network.
 **Node hardening** for the linear V1 protocol: **peer/session safety**, **sync/catch-up**, **persistence and restart**, **local mempool hygiene**, **observability**—with a **protocol freeze** on validity and economics (see [`v2_scope.md`](v2_scope.md)).
 
 ### V3
-Stronger consensus design, better decentralization model, and improved performance.
+Stronger **consensus / chain-selection / reorg** clarity and a path toward more serious decentralization and performance—**scoped in writing first** ([`v3_scope.md`](v3_scope.md)). **Planning only** until explicitly approved; no silent protocol drift on `main`.
 
 ### V4+
 Possible advanced capabilities only if the earlier foundation is strong enough to support them safely.

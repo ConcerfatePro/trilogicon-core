@@ -1,0 +1,4 @@
+# Trilogicon V2 — binds this data directory to a genesis state commitment.
+# Do not edit by hand unless you know the effect on chain.blocks and pending_tx.tril.
+state_commitment_hex = "537c575a7fc58259f839e371349df505e5abb3902234cdb3b1d3bfd7f6fd7dc8"
+

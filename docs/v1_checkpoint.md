@@ -30,3 +30,5 @@ This checklist defines when the Trilogicon **V1 implementation** is considered c
 - [x] README or `docs/v1_scope.md` states what V1 explicitly does **not** guarantee (e.g. production decentralization, partition behavior, DoS resistance).
 
 When every item above is checked, the team may call **V1 implementation complete** and plan **V2** from that baseline using [`v2_scope.md`](v2_scope.md).
+
+**After V2:** The reference node’s V2 hardening line is closed out in [`v2_checkpoint.md`](v2_checkpoint.md); future protocol work should be scoped explicitly (e.g. V2.1 polish vs V3), not conflated with V1/V2 checkpoints.

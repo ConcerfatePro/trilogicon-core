@@ -23,8 +23,8 @@ use crate::types::Address;
 /// ## Seal-time policy (`ordered_candidates_for_seal` / [`crate::blockchain::Blockchain::append_block_from_mempool`])
 ///
 /// Walks FIFO order on a **clone** of chain state: **skips** future-nonce head-of-line gaps, **errors**
-/// on stale nonces or on the next expected nonce that fails to apply (atomic prefix), and **skips**
-/// txs that cannot apply yet (e.g. missing sender). See unit tests and `v2_hardening`.
+/// on stale nonces or on the next expected nonce that fails to apply, and **skips** txs that
+/// cannot apply yet (e.g. missing sender). See unit tests and `v2_hardening`.
 ///
 /// Documented gate checklist: [`docs/v1_checkpoint.md`](../../docs/v1_checkpoint.md).
 pub struct Mempool {
@@ -151,8 +151,8 @@ impl Mempool {
     ///   for one sender does not block later txs (including other senders or lower nonces still in
     ///   the FIFO).
     /// - Returns [`Err`] if a tx is **stale** (`tx.nonce < committed nonce`) or is the expected
-    ///   next nonce for its sender but **does not apply** (e.g. insufficient balance): the atomic
-    ///   FIFO-prefix seal cannot proceed past that point.
+    ///   next nonce for its sender but **does not apply** (e.g. insufficient balance): candidate
+    ///   selection cannot proceed past that point.
     /// - Skips txs that fail before a nonce match (e.g. missing sender on empty genesis).
     pub fn ordered_candidates_for_seal(
         &self,
@@ -231,21 +231,17 @@ impl Mempool {
     /// stale nonce (`tx.nonce < account.nonce`); at `tx.nonce == account.nonce`, `amount+fee`
     /// overflow or insufficient balance.
     ///
-    /// Stops at `tx.nonce > account.nonce` (gap): no future-nonce speculation, no reordering, no
-    /// in-seal skipping.
+    /// Stops at `tx.nonce > account.nonce` (gap): this purge helper does not drop or skip the gap.
+    /// Seal candidate selection handles executable-subsequence scanning separately.
     ///
-    /// **Known gap:** if an atomic FIFO-prefix seal fails because a **later** tx in the prefix is
-    /// invalid while an **earlier** tx is still valid, this purge does not remove the valid head;
-    /// the queue can stay stuck until manual intervention or new submissions — fixing that would
-    /// require changing producer/FIFO-prefix rules (out of scope for this helper).
+    /// **Known gap:** if candidate selection fails because an expected-next tx is invalid while an
+    /// earlier selected tx is still valid, this purge does not remove the valid head; the queue can
+    /// stay stuck until manual intervention or new submissions — fixing that would require broader
+    /// producer-policy changes (out of scope for this helper).
     pub fn purge_nonviable_under_committed_state(&mut self, committed: &State) -> usize {
         let state = committed;
         let mut removed = 0usize;
-        loop {
-            let head_hash = match self.order.front().cloned() {
-                Some(h) => h,
-                None => break,
-            };
+        while let Some(head_hash) = self.order.front().cloned() {
             let Some(tx) = self.txs.get(&head_hash).cloned() else {
                 self.order.pop_front();
                 continue;
@@ -502,9 +498,7 @@ mod tests {
         let mut chain = Blockchain::from_genesis(&g).unwrap();
         let mut pool = Mempool::new(10);
         pool.try_submit(first).unwrap();
-        chain
-            .append_block_from_mempool(&mut pool, 8, 20)
-            .unwrap();
+        chain.append_block_from_mempool(&mut pool, 8, 20).unwrap();
         assert_eq!(chain.state().get_account(&addr).unwrap().nonce, 1);
         let bad = signed_tx(5, "recv_z", 1, 1, 0, 12);
         pool.try_submit(bad).unwrap();
@@ -568,7 +562,9 @@ mod tests {
 
         let first_a = signed_tx(10, "recv_mq_a", 1, 1, 0, 4_000_001);
         let addr_a = first_a.sender.clone();
-        let addr_b = signed_tx(11, "recv_mq_b", 1, 1, 0, 4_000_002).sender.clone();
+        let addr_b = signed_tx(11, "recv_mq_b", 1, 1, 0, 4_000_002)
+            .sender
+            .clone();
         let g = Genesis {
             allocations: vec![
                 GenesisAllocation {

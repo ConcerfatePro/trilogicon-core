@@ -1,16 +1,16 @@
 # Trilogicon (TRIL)
 
-Minimal V1 value-transfer chain in Rust: accounts, signed transfers, blocks, deterministic replay protection, shared **genesis**, and basic TCP sync between nodes.
+Minimal value-transfer chain in Rust: accounts, signed transfers, blocks, deterministic replay protection, shared **genesis**, and TCP sync between nodes.
 
-## Current release-candidate phase
+## Current stage
 
-The current stabilization branch is:
+- **V1 protocol core** (what blocks and transactions mean) is **complete** for its scope — see [`docs/v1_checkpoint.md`](docs/v1_checkpoint.md) and [`docs/v1_scope.md`](docs/v1_scope.md).
+- **V2 node hardening** (persistence, restart safety, peer session and sync bounds, mempool hygiene as local policy, operator-facing diagnostics) is **technically complete** for the reference implementation on `main` — see [`docs/v2_checkpoint.md`](docs/v2_checkpoint.md) and [`docs/v2_scope.md`](docs/v2_scope.md). **Cutting the V2 release:** tag **`v2.0.0`**, then follow [`docs/v2_checkpoint.md`](docs/v2_checkpoint.md#release-tagging-maintainers); **frozen** semantics: [`docs/v2_freeze.md`](docs/v2_freeze.md); **notes:** [`docs/releases/v2.0.0.md`](docs/releases/v2.0.0.md).
+- **V3** — **Planning only** for consensus / chain-selection / reorg clarity: [`docs/v3_scope.md`](docs/v3_scope.md). Not the active implementation track until that scope (and a chain-rules spec) is explicitly approved.
 
-`release/v1.0.0-rc1`
+The historical **V1 release candidate** branch `release/v1.0.0-rc1` may still exist for tagging context; **current** expectations and CI health are defined by **`main`** and the checkpoint docs above.
 
-V1 is feature-frozen. The current focus is bug fixing, testing, documentation, operator experience, and private technical validation.
-
-Design rules live under [`docs/`](docs/) (scope, invariants, architecture). **Genesis** is documented in [`docs/genesis.md`](docs/genesis.md). **V1 protocol semantics are frozen**; **V2** in this repository is a **node-hardening** line (persistence, sync operability, operator messaging, local resource policy) scoped in [`docs/v2_scope.md`](docs/v2_scope.md) without changing validity rules. Module ownership and the consensus boundary are summarized in [`docs/modules.md`](docs/modules.md); the V1 completion checklist is [`docs/v1_checkpoint.md`](docs/v1_checkpoint.md). For fmt/clippy/test and PR expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
+Design rules live under [`docs/`](docs/) (scope, invariants, architecture). **Genesis** is documented in [`docs/genesis.md`](docs/genesis.md). Module ownership and the **consensus boundary** are in [`docs/modules.md`](docs/modules.md). Realistic limits of the software are summarized in [`docs/known_issues.md`](docs/known_issues.md). For fmt/clippy/test and PR expectations, see [`CONTRIBUTING.md`](CONTRIBUTING.md).
 
 ## Troubleshooting
 
@@ -124,6 +124,10 @@ cargo test
 ```
 
 Integration tests include subprocess **two-node**, **restart**, **three-node fan-out** E2Es (`node/tests/cli_*_e2e.rs`), and a **run lock** E2E (`node/tests/run_data_dir_lock_e2e.rs`). The `node` binary is at `node/target/debug/node` (or `release` with `--release`).
+
+### Optional: local dev test UI (not production)
+
+For a **localhost-only** browser shell over a data directory (overview, account lookup, queue test transfers), see [`dev-test-ui/README.md`](dev-test-ui/README.md). It does **not** replace `node run`; keep the real node in a separate terminal for sealing and sync.
 
 ## Operator runbook (local two-node)
 

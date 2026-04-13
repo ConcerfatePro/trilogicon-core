@@ -11,9 +11,8 @@ use node::blockchain::Blockchain;
 use node::genesis::Genesis;
 use node::mempool::Mempool;
 use node::network::{
-    encode_session_payload, handshake_initiator, read_framed, serve_tcp_listener,
-    wire_encode_get_blocks, write_framed, InboundPeerPolicy, InboundSlotPool, NodeInner,
-    OP_SESSION_HELLO,
+    InboundPeerPolicy, InboundSlotPool, NodeInner, OP_SESSION_HELLO, encode_session_payload,
+    handshake_initiator, read_framed, serve_tcp_listener, wire_encode_get_blocks, write_framed,
 };
 use node::storage::BlockStore;
 
@@ -49,7 +48,11 @@ fn minimal_state() -> Arc<Mutex<NodeInner>> {
 
 fn spawn_serve(
     policy: InboundPeerPolicy,
-) -> (thread::JoinHandle<()>, std::net::SocketAddr, Arc<Mutex<NodeInner>>) {
+) -> (
+    thread::JoinHandle<()>,
+    std::net::SocketAddr,
+    Arc<Mutex<NodeInner>>,
+) {
     let state = minimal_state();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
@@ -74,18 +77,14 @@ fn inbound_slot_released_when_session_ends() {
     let genesis = { state.lock().unwrap().genesis.clone() };
 
     let mut first = std::net::TcpStream::connect(addr).unwrap();
-    first
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    first.set_read_timeout(Some(Duration::from_secs(10))).ok();
     handshake_initiator(&mut first, &genesis, 0).unwrap();
     drop(first);
 
     thread::sleep(Duration::from_millis(250));
 
     let mut second = std::net::TcpStream::connect(addr).unwrap();
-    second
-        .set_read_timeout(Some(Duration::from_secs(10)))
-        .ok();
+    second.set_read_timeout(Some(Duration::from_secs(10))).ok();
     handshake_initiator(&mut second, &genesis, 0).unwrap();
 }
 

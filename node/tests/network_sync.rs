@@ -8,9 +8,9 @@ use node::block::Block;
 use node::crypto::Crypto;
 use node::genesis::Genesis;
 use node::network::{
+    OP_GET_BLOCKS, OP_SESSION_HELLO, OP_SESSION_HELLO_ACK, OutboundPeerTimeouts,
     decode_session_payload, encode_session_payload, pull_blocks_from_peer, read_framed,
-    wire_encode_blocks_response, write_framed, OutboundPeerTimeouts, OP_GET_BLOCKS,
-    OP_SESSION_HELLO, OP_SESSION_HELLO_ACK,
+    wire_encode_blocks_response, write_framed,
 };
 use node::transaction::Transaction;
 use node::types::Address;

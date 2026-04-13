@@ -1,4 +1,6 @@
-# RC1 Verification
+# RC1 Verification (historical)
+
+**Note:** This note records **manual checks** performed around the **V1.0.0-rc1** candidate. **Current** completion criteria for the reference node are [`v1_checkpoint.md`](v1_checkpoint.md) and [`v2_checkpoint.md`](v2_checkpoint.md).
 
 Release candidate: `v1.0.0-rc1`
 
@@ -13,5 +15,5 @@ Release candidate: `v1.0.0-rc1`
 - missing wallet startup path tested manually
 - missing genesis startup path tested manually
 
-## Current phase
-RC1 hardening and private technical validation.
+## Phase at time of writing
+RC1 hardening and private technical validation (historical).

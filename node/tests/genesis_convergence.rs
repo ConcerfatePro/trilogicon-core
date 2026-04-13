@@ -12,7 +12,7 @@ use node::blockchain::Blockchain;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::{
-    InboundPeerPolicy, NodeInner, spawn_incoming_loop, sync_from_peer, SyncWorkBudget,
+    InboundPeerPolicy, NodeInner, SyncWorkBudget, spawn_incoming_loop, sync_from_peer,
 };
 use node::storage::BlockStore;
 use node::transaction::Transaction;

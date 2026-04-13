@@ -9,10 +9,10 @@ use node::blockchain::Blockchain;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::{
-    decode_session_payload, encode_session_payload, pull_blocks_from_peer, read_framed,
-    sync_from_peer, validate_linear_sync_batch, wire_encode_blocks_response, write_framed,
-    NodeInner, OutboundPeerTimeouts, OP_BLOCKS, OP_GET_BLOCKS, OP_SESSION_HELLO,
-    OP_SESSION_HELLO_ACK, SyncWorkBudget, TRIL_WIRE_PROTOCOL_VERSION,
+    NodeInner, OP_BLOCKS, OP_GET_BLOCKS, OP_SESSION_HELLO, OP_SESSION_HELLO_ACK,
+    OutboundPeerTimeouts, SyncWorkBudget, TRIL_WIRE_PROTOCOL_VERSION, decode_session_payload,
+    encode_session_payload, pull_blocks_from_peer, read_framed, sync_from_peer,
+    validate_linear_sync_batch, wire_encode_blocks_response, write_framed,
 };
 use node::storage::BlockStore;
 use node::wallet::Wallet;
@@ -83,7 +83,8 @@ fn handshake_rejects_wrong_genesis_commitment() {
     });
     thread::sleep(std::time::Duration::from_millis(30));
 
-    let err = pull_blocks_from_peer(&addr, 1, &g_a, 0, &OutboundPeerTimeouts::default()).unwrap_err();
+    let err =
+        pull_blocks_from_peer(&addr, 1, &g_a, 0, &OutboundPeerTimeouts::default()).unwrap_err();
     assert!(
         err.contains("mismatch") || err.contains("commitment"),
         "unexpected err: {err}"
@@ -281,7 +282,8 @@ fn validate_linear_batch_rejects_internal_gap() {
     let (g, wa, wb) = genesis_two_wallets();
     let blocks = build_linear_three_blocks(&g, &wa, &wb);
     let chain = Blockchain::from_genesis(&g).unwrap();
-    let err = validate_linear_sync_batch(&chain, &[blocks[0].clone(), blocks[2].clone()]).unwrap_err();
+    let err =
+        validate_linear_sync_batch(&chain, &[blocks[0].clone(), blocks[2].clone()]).unwrap_err();
     assert!(err.contains("not linear"), "{err}");
 }
 
@@ -290,11 +292,7 @@ fn tempfile_for_chain() -> std::path::PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
-        "trilog_peer_sync_{}_{}",
-        std::process::id(),
-        nanos
-    ))
+    std::env::temp_dir().join(format!("trilog_peer_sync_{}_{}", std::process::id(), nanos))
 }
 
 #[test]

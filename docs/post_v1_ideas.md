@@ -1,12 +1,12 @@
 # Post-V1 Ideas
 
-This file is for ideas that should not enter RC1 unless they are required to fix a real bug, correctness issue, or security problem.
+Back-burner ideas that are **not** committed scope for the **current** reference node (see [`v2_checkpoint.md`](v2_checkpoint.md)). Use for **future protocol** (e.g. V3) or product directions that should not land as silent `main` changes.
 
 ## Rule
-If an idea expands scope instead of hardening RC1, it belongs here.
+If an idea expands protocol scope or needs a versioned spec before code, it belongs here until scheduled.
 
 ## Future ideas
 
-Structured **V2** scope and backlog: [`v2_scope.md`](v2_scope.md). Use this file for ideas that are **not** in that scope or are still too vague to schedule.
+Structured **V2** scope and backlog: [`v2_scope.md`](v2_scope.md). **V2** release freeze: [`v2_freeze.md`](v2_freeze.md). **V3** planning (not implementation): [`v3_scope.md`](v3_scope.md). **V2.1** polish ideas: still record here or in [`vision.md`](vision.md) until scheduled.
 
 - 

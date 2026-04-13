@@ -107,10 +107,7 @@ impl State {
         };
 
         {
-            let sender = self
-                .accounts
-                .get_mut(&tx.sender)
-                .expect("sender exists");
+            let sender = self.accounts.get_mut(&tx.sender).expect("sender exists");
             sender.balance = new_sender_balance;
             sender.nonce = new_sender_nonce;
         }
@@ -333,14 +330,7 @@ mod tests {
         state.create_account(sender_addr.clone(), 500);
         state.replace_account_for_tests(Account::new(receiver_addr.clone(), u64::MAX));
 
-        let tx = make_signed_tx(
-            &signing_key,
-            receiver_addr.clone(),
-            1,
-            1,
-            0,
-            1_700_000_600,
-        );
+        let tx = make_signed_tx(&signing_key, receiver_addr.clone(), 1, 1, 0, 1_700_000_600);
         let r = state.apply_transaction(&tx);
         assert!(
             matches!(r, Err(ProtocolError::StateError(ref m)) if m.contains("receiver balance overflow")),
@@ -348,10 +338,7 @@ mod tests {
         );
         assert_eq!(state.get_account(&sender_addr).unwrap().balance, 500);
         assert_eq!(state.get_account(&sender_addr).unwrap().nonce, 0);
-        assert_eq!(
-            state.get_account(&receiver_addr).unwrap().balance,
-            u64::MAX
-        );
+        assert_eq!(state.get_account(&receiver_addr).unwrap().balance, u64::MAX);
     }
 
     #[test]

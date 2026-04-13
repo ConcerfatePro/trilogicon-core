@@ -20,11 +20,8 @@ fn genesis_bind_mismatch_strings_tag_startup_fail_closed() {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!(
-        "trilog_obs_bind_{}_{}",
-        std::process::id(),
-        nanos
-    ));
+    let dir =
+        std::env::temp_dir().join(format!("trilog_obs_bind_{}_{}", std::process::id(), nanos));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let g1 = one_addr_genesis("obs_a");

@@ -12,9 +12,9 @@ use node::encoding::{encode_block, encode_transaction};
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
 use node::network::{
-    handshake_initiator, serve_tcp_listener, write_framed, InboundPeerPolicy, InboundSlotPool,
-    NodeInner, OP_BLOCK, OP_TX, INGRESS_INBOUND_TX_QUOTA_EXHAUSTED,
-    INGRESS_STALE_BLOCK_QUOTA_EXHAUSTED,
+    INGRESS_INBOUND_TX_QUOTA_EXHAUSTED, INGRESS_STALE_BLOCK_QUOTA_EXHAUSTED, InboundPeerPolicy,
+    InboundSlotPool, NodeInner, OP_BLOCK, OP_TX, handshake_initiator, serve_tcp_listener,
+    write_framed,
 };
 use node::storage::BlockStore;
 use node::wallet::Wallet;
@@ -126,9 +126,7 @@ fn stale_decoded_blocks_quota_disconnects_without_invalid_block_strikes() {
 
 #[test]
 fn stale_quota_disconnect_message_tag_is_stable() {
-    let err = format!(
-        "{INGRESS_STALE_BLOCK_QUOTA_EXHAUSTED}: test disconnect (max_stale=5)"
-    );
+    let err = format!("{INGRESS_STALE_BLOCK_QUOTA_EXHAUSTED}: test disconnect (max_stale=5)");
     assert!(
         err.contains(INGRESS_STALE_BLOCK_QUOTA_EXHAUSTED),
         "operator grep tag must remain stable: {err}"
@@ -190,7 +188,9 @@ fn inbound_tx_decode_quota_disconnects_typed_not_protocol_budget() {
     c.set_read_timeout(Some(Duration::from_secs(5))).ok();
     handshake_initiator(&mut c, &g, 0).unwrap();
 
-    let tx = wa.sign_transfer(wb.address(), 1, 1, 0, 2_000_000_000).unwrap();
+    let tx = wa
+        .sign_transfer(wb.address(), 1, 1, 0, 2_000_000_000)
+        .unwrap();
     let enc = encode_transaction(&tx);
     for _ in 0..5 {
         let mut msg = vec![OP_TX];

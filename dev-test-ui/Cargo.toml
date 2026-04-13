@@ -1,0 +1,16 @@
+# LOCAL DEVELOPMENT / TESTING ONLY — not a wallet, not for production.
+[package]
+name = "trilogicon-dev-test-ui"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+description = "LOCAL-ONLY web shell for Trilogicon testing (not a production wallet)."
+publish = false
+
+[dependencies]
+node = { path = "../node" }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+toml = "0.8"
