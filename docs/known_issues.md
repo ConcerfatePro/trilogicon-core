@@ -20,7 +20,13 @@ This file tracks known limitations, unfinished areas, and important notes during
 - verify restart and persistence behavior stays stable
 - verify shared-genesis setup is easy to follow
 - improve operator-facing troubleshooting notes if needed
-- queued state-invalid transactions can cause repeated `block production: insufficient balance` log spam until the pending queue is cleared
+
+## Carried forward as V2 backlog (see `docs/v2_scope.md`)
+
+The following are **known V1 limitations** that map to **explicit V2** work items (node hardening, not new protocol features):
+
+- **Pending queue vs seal loop:** queued **state-invalid** transactions (e.g. insufficient balance at seal time) can cause repeated `block production: insufficient balance` log noise until the operator clears `pending_tx.tril` or the tx becomes valid. V2 should define **mempool/pending hygiene** (revalidation, bounds, drop semantics) under **local policy only** per [`v2_scope.md`](v2_scope.md).
+- **Restart and persistence:** follow [`docs/design_notes/v2_persistence_restart.md`](design_notes/v2_persistence_restart.md) and [`docs/v2_scope.md`](v2_scope.md#project-decisions-v2) (fail-closed chain load, pending file semantics, hard genesis/binding refusal).
 
 ## Next RC1 task
 - add operator troubleshooting notes for common setup mistakes (existing wallet.seed, shared genesis mismatch, node started without genesis, send only queues tx)

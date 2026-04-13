@@ -54,7 +54,7 @@ Trilogicon is designed as a multi-version project.
 A simple and secure transfer network.
 
 ### V2
-Improved networking, synchronization, node reliability, and operational robustness.
+**Node hardening** for the linear V1 protocol: **peer/session safety**, **sync/catch-up**, **persistence and restart**, **local mempool hygiene**, **observability**—with a **protocol freeze** on validity and economics (see [`v2_scope.md`](v2_scope.md)).
 
 ### V3
 Stronger consensus design, better decentralization model, and improved performance.

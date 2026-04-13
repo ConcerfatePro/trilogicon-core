@@ -136,14 +136,14 @@ That means Trilogicon v1 should avoid ambiguous serialization, hidden defaults, 
 
 The network must support grouping transactions into blocks.
 
-A block should contain protocol-defined data such as:
+A block contains protocol-defined data:
 - block height
 - previous block hash
 - timestamp
 - ordered transaction list
-- producer/miner or consensus-related data
-- proof or eligibility field depending on the chosen v1 consensus baseline
-- block hash
+- block hash (must match the canonical header preimage)
+
+V1 blocks do **not** carry a separate in-header producer identity or consensus proof field; sealing is handled by the node implementation under `docs/protocol_overview.md`.
 
 ### 8. Block validation
 
@@ -254,7 +254,7 @@ Trilogicon is intended to grow through multiple versions.
 Simple, secure value transfer.
 
 ### V2
-Improved networking, synchronization, storage, and node reliability.
+**Node hardening** for the linear V1 protocol: peer/session safety, sync/catch-up, persistence/restart, local mempool hygiene, observability—**no** consensus or economics changes beyond [`v2_scope.md`](v2_scope.md) (protocol freeze).
 
 ### V3
 Stronger consensus and performance improvements.

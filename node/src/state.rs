@@ -62,16 +62,13 @@ impl State {
         })
     }
 
+    /// Apply one validated transfer. All arithmetic is **checked** before any mutation; overflow
+    /// paths return [`ProtocolError::StateError`] and leave `self` unchanged.
     pub fn apply_transaction(&mut self, tx: &Transaction) -> Result<(), ProtocolError> {
         tx.basic_validate()?;
 
-        let sender = self
-            .accounts
-            .get_mut(&tx.sender)
-            .ok_or_else(|| ProtocolError::StateError(String::from("sender account missing")))?;
-
-        if sender.nonce != tx.nonce {
-            return Err(ProtocolError::InvalidNonce);
+        if tx.sender == tx.receiver {
+            return self.apply_self_transfer(tx);
         }
 
         let total_cost = tx
@@ -79,22 +76,92 @@ impl State {
             .checked_add(tx.fee)
             .ok_or_else(|| ProtocolError::StateError(String::from("amount+fee overflow")))?;
 
-        if sender.balance < total_cost {
+        let (sender_balance, sender_nonce) = {
+            let sender = self
+                .accounts
+                .get(&tx.sender)
+                .ok_or_else(|| ProtocolError::StateError(String::from("sender account missing")))?;
+            (sender.balance, sender.nonce)
+        };
+
+        if sender_nonce != tx.nonce {
+            return Err(ProtocolError::InvalidNonce);
+        }
+
+        if sender_balance < total_cost {
             return Err(ProtocolError::InsufficientBalance);
         }
 
-        sender.balance -= total_cost;
-        sender.nonce += 1;
+        let new_sender_balance = sender_balance.checked_sub(total_cost).ok_or_else(|| {
+            ProtocolError::StateError(String::from("sender balance debit underflow"))
+        })?;
+        let new_sender_nonce = sender_nonce
+            .checked_add(1)
+            .ok_or_else(|| ProtocolError::StateError(String::from("sender nonce overflow")))?;
+
+        let new_receiver_balance = match self.accounts.get(&tx.receiver) {
+            Some(r) => r.balance.checked_add(tx.amount).ok_or_else(|| {
+                ProtocolError::StateError(String::from("receiver balance overflow"))
+            })?,
+            None => tx.amount,
+        };
+
+        {
+            let sender = self
+                .accounts
+                .get_mut(&tx.sender)
+                .expect("sender exists");
+            sender.balance = new_sender_balance;
+            sender.nonce = new_sender_nonce;
+        }
 
         let receiver = self
             .accounts
             .entry(tx.receiver.clone())
             .or_insert_with(|| Account::new(tx.receiver.clone(), 0));
-        receiver.balance += tx.amount;
+        receiver.balance = new_receiver_balance;
 
         // V1: `fee` is burned (deducted from sender, not credited to any account).
 
         Ok(())
+    }
+
+    fn apply_self_transfer(&mut self, tx: &Transaction) -> Result<(), ProtocolError> {
+        let total_cost = tx
+            .amount
+            .checked_add(tx.fee)
+            .ok_or_else(|| ProtocolError::StateError(String::from("amount+fee overflow")))?;
+
+        let acc = self
+            .accounts
+            .get_mut(&tx.sender)
+            .ok_or_else(|| ProtocolError::StateError(String::from("sender account missing")))?;
+
+        if acc.nonce != tx.nonce {
+            return Err(ProtocolError::InvalidNonce);
+        }
+        if acc.balance < total_cost {
+            return Err(ProtocolError::InsufficientBalance);
+        }
+
+        let new_balance = acc
+            .balance
+            .checked_sub(total_cost)
+            .and_then(|b| b.checked_add(tx.amount))
+            .ok_or_else(|| ProtocolError::StateError(String::from("balance update overflow")))?;
+        let new_nonce = acc
+            .nonce
+            .checked_add(1)
+            .ok_or_else(|| ProtocolError::StateError(String::from("sender nonce overflow")))?;
+
+        acc.balance = new_balance;
+        acc.nonce = new_nonce;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn replace_account_for_tests(&mut self, account: Account) {
+        self.accounts.insert(account.address.clone(), account);
     }
 }
 
@@ -103,6 +170,7 @@ mod tests {
     use super::*;
     use crate::crypto::Crypto;
     use crate::transaction::Transaction;
+    use crate::types::Account;
     use ed25519_dalek::{Signer, SigningKey};
 
     fn make_signed_tx(
@@ -252,5 +320,69 @@ mod tests {
         assert_eq!(sender.nonce, 1);
         assert_eq!(sender.balance, 94);
         assert_eq!(state.get_account(&receiver_addr).unwrap().balance, 5);
+    }
+
+    #[test]
+    fn apply_transaction_rejects_receiver_balance_overflow_without_mutation() {
+        let signing_key = SigningKey::from_bytes(&[13u8; 32]);
+        let sender_vk = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&sender_vk.to_bytes()));
+        let receiver_addr = Address::new("recv_ovf");
+
+        let mut state = State::new();
+        state.create_account(sender_addr.clone(), 500);
+        state.replace_account_for_tests(Account::new(receiver_addr.clone(), u64::MAX));
+
+        let tx = make_signed_tx(
+            &signing_key,
+            receiver_addr.clone(),
+            1,
+            1,
+            0,
+            1_700_000_600,
+        );
+        let r = state.apply_transaction(&tx);
+        assert!(
+            matches!(r, Err(ProtocolError::StateError(ref m)) if m.contains("receiver balance overflow")),
+            "unexpected: {r:?}"
+        );
+        assert_eq!(state.get_account(&sender_addr).unwrap().balance, 500);
+        assert_eq!(state.get_account(&sender_addr).unwrap().nonce, 0);
+        assert_eq!(
+            state.get_account(&receiver_addr).unwrap().balance,
+            u64::MAX
+        );
+    }
+
+    #[test]
+    fn apply_transaction_rejects_sender_nonce_overflow_without_mutation() {
+        let signing_key = SigningKey::from_bytes(&[14u8; 32]);
+        let sender_vk = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&sender_vk.to_bytes()));
+        let receiver_addr = Address::new("recv_nonce_max");
+
+        let mut state = State::new();
+        state.replace_account_for_tests(Account {
+            address: sender_addr.clone(),
+            balance: 1_000,
+            nonce: u64::MAX,
+        });
+
+        let tx = make_signed_tx(
+            &signing_key,
+            receiver_addr.clone(),
+            1,
+            1,
+            u64::MAX,
+            1_700_000_700,
+        );
+        let r = state.apply_transaction(&tx);
+        assert!(
+            matches!(r, Err(ProtocolError::StateError(ref m)) if m.contains("nonce overflow")),
+            "unexpected: {r:?}"
+        );
+        assert_eq!(state.get_account(&sender_addr).unwrap().nonce, u64::MAX);
+        assert_eq!(state.get_account(&sender_addr).unwrap().balance, 1_000);
+        assert!(state.get_account(&receiver_addr).is_none());
     }
 }

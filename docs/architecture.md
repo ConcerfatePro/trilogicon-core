@@ -21,6 +21,9 @@ Trilogicon/
 ├─ docs/
 │  ├─ vision.md
 │  ├─ v1_scope.md
+│  ├─ v2_scope.md
+│  ├─ design_notes/
+│  │  └─ v2_persistence_restart.md
 │  ├─ protocol_overview.md
 │  ├─ design_principles.md
 │  ├─ protocol_invariants.md
@@ -60,7 +63,7 @@ Trilogicon/
 - `mempool.rs`: pending transaction intake and bounded storage.
 - `consensus.rs`: minimal V1 block production/acceptance policy.
 - `network.rs`: peer messaging, block/tx propagation, sync flow.
-- `storage.rs`: persistence interfaces and disk-backed implementation path.
+- `storage.rs`: `chain.blocks` persistence (V2 CRC-framed records for new files; legacy frames supported), `load_blockchain_from_disk`, in-process append poison handling.
 - `wallet.rs`: local key management and transaction signing helpers.
 
 ---
@@ -72,4 +75,4 @@ Trilogicon/
 - Storage is abstracted so in-memory and persistent backends can coexist.
 - Consensus checks are explicit and independently verifiable by each node.
 
-These boundaries keep V1 auditable while leaving room for V2/V3 evolution.
+These boundaries keep V1 auditable while leaving room for evolution; planned V2 work is scoped in [`v2_scope.md`](v2_scope.md), broader consensus and performance work remains for later versions (`docs/vision.md`).

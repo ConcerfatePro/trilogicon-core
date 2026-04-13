@@ -1,4 +1,4 @@
-//! Integration: TCP get-blocks / block batch over the V1 wire format.
+//! Integration: TCP session handshake + get-blocks / block batch over the V2 wire format.
 
 use std::net::TcpListener;
 use std::thread;
@@ -6,8 +6,11 @@ use std::thread;
 use ed25519_dalek::{Signer, SigningKey};
 use node::block::Block;
 use node::crypto::Crypto;
+use node::genesis::Genesis;
 use node::network::{
-    pull_blocks_from_peer, read_framed, wire_encode_blocks_response, write_framed,
+    decode_session_payload, encode_session_payload, pull_blocks_from_peer, read_framed,
+    wire_encode_blocks_response, write_framed, OutboundPeerTimeouts, OP_GET_BLOCKS,
+    OP_SESSION_HELLO, OP_SESSION_HELLO_ACK,
 };
 use node::transaction::Transaction;
 use node::types::Address;
@@ -41,26 +44,31 @@ fn sample_block_height_1() -> Block {
     b
 }
 
-/// Opcode 3 = GET_BLOCKS in `node::network` (stable wire contract).
-const OP_GET_BLOCKS: u8 = 3;
-
 #[test]
 fn tcp_pull_blocks_matches_mini_server() {
     let block = sample_block_height_1();
     let blocks = vec![block.clone()];
+    let g = Genesis::empty();
+    let g_srv = g.clone();
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap().to_string();
 
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
+        let hello = read_framed(&mut stream).unwrap();
+        let (op, _, _, _) = decode_session_payload(&hello).unwrap();
+        assert_eq!(op, OP_SESSION_HELLO);
+        let ack = encode_session_payload(OP_SESSION_HELLO_ACK, &g_srv, u64::MAX).unwrap();
+        write_framed(&mut stream, &ack).unwrap();
+
         let req = read_framed(&mut stream).unwrap();
         assert_eq!(req[0], OP_GET_BLOCKS);
         let resp = wire_encode_blocks_response(&blocks).unwrap();
         write_framed(&mut stream, &resp).unwrap();
     });
 
-    let pulled = pull_blocks_from_peer(&addr, 1).unwrap();
+    let (pulled, _) = pull_blocks_from_peer(&addr, 1, &g, 0, &OutboundPeerTimeouts::default()).unwrap();
     server.join().unwrap();
 
     assert_eq!(pulled.len(), 1);
