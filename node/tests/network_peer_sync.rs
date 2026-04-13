@@ -197,6 +197,9 @@ fn sync_multi_round_when_server_caps_batch_size() {
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(10),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
     let out = sync_from_peer(&mut inner, &addr, &SyncWorkBudget::default()).unwrap();
     assert_eq!(out.blocks_appended, 3);
@@ -244,6 +247,9 @@ fn peer_sync_mempool_hygiene_drops_stale_nonce_after_catch_up() {
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(20),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
     inner.pool.try_submit(stale).unwrap();
     assert_eq!(inner.pool.len(), 1);

@@ -50,7 +50,7 @@ fn missing_chain_file_loads_genesis_only() {
     let dir = tmp_dir("no_chain");
     let g = one_account_genesis("alice_miss_chain");
     let chain_path = dir.join("chain.blocks");
-    let c = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (c, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(c.height(), 0);
     let _ = fs::remove_dir_all(&dir);
 }
@@ -119,7 +119,7 @@ fn legacy_chain_blocks_file_without_magic_loads_and_replays() {
     let chain_path = dir.join("chain.blocks");
     fs::write(&chain_path, &raw).unwrap();
 
-    let loaded = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (loaded, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(loaded.height(), 1);
     assert_eq!(
         loaded.state().get_account(&sender).unwrap().nonce,
@@ -192,7 +192,7 @@ fn restart_reload_preserves_height_after_block_persisted() {
     store.append_block(&b).unwrap();
     drop(store);
 
-    let loaded = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (loaded, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(loaded.height(), 1);
     assert_eq!(
         loaded.state().accounts_sorted(),

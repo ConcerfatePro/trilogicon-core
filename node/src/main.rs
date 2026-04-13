@@ -30,6 +30,7 @@ use node::operator_msg::{PFX_MEMPOOL, PFX_PENDING, PFX_PEER, PFX_SEAL, PFX_START
 use node::pending_tx_file::{
     append_pending_transaction, drain_pending_file, PENDING_TX_LOCK_FILE,
 };
+use node::peer_book::PeerBook;
 use node::storage::{BlockStore, load_blockchain_from_disk};
 use node::types::Address;
 use node::wallet::Wallet;
@@ -433,7 +434,7 @@ fn cmd_send(
     let genesis = load_genesis_for_cmd(data_dir, genesis_flag)?;
     data_dir_bind::verify_binding_if_present(data_dir, &genesis)?;
     let chain_path = data_dir.join(CHAIN_FILE);
-    let chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
+    let (chain, _repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
         format!(
             "{PFX_STARTUP} fail-closed: could not load chain {} — {e}. Repair or replace chain.blocks if corrupt or truncated. See docs/design_notes/v2_persistence_restart.md",
             chain_path.display()
@@ -497,7 +498,7 @@ fn cmd_run(
     data_dir_bind::verify_binding_if_present(data_dir, &genesis)?;
     let chain_path = data_dir.join(CHAIN_FILE);
     let pending_path = data_dir.join(PENDING_TX_FILE);
-    let mut chain = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
+    let (mut chain, _repaired) = load_blockchain_from_disk(&chain_path, &genesis).map_err(|e| {
         format!(
             "{PFX_STARTUP} fail-closed: could not load chain {} — {e}. Repair or replace chain.blocks if corrupt or truncated. See docs/design_notes/v2_persistence_restart.md",
             chain_path.display()
@@ -508,6 +509,14 @@ fn cmd_run(
         chain.consensus_params_mut().max_future_drift_secs = d;
     }
     let store = BlockStore::open_append(&chain_path).map_err(|e| e.to_string())?;
+    let mut peer_book = PeerBook::load_or_empty(&PeerBook::path_in_data_dir(data_dir))
+        .map_err(|e| e.to_string())?;
+    for p in &peers {
+        peer_book.merge_seed(p.clone());
+    }
+    peer_book
+        .save(&PeerBook::path_in_data_dir(data_dir))
+        .map_err(|e| e.to_string())?;
     eprintln!(
         "{PFX_STARTUP} mempool capacity {mempool_capacity} tx slots (local bound; not consensus)"
     );
@@ -628,40 +637,41 @@ fn cmd_run(
             }
 
             let now = unix_now_secs();
-            #[allow(clippy::explicit_auto_deref)]
-            let NodeInner {
-                genesis,
-                chain,
-                pool,
-                store,
-            } = &mut *g;
-            let (fifo, stale, dup) = pool.hygiene_vs_committed_ledger(chain.state());
+            let committed = g.chain.state().clone();
+            let (fifo, stale, dup) = g.pool.hygiene_vs_committed_ledger(&committed);
             if fifo > 0 || stale > 0 || dup > 0 {
                 eprintln!(
                     "{PFX_MEMPOOL} hygiene vs committed ledger: FIFO-cleaned {fifo}, stale-nonce dropped {stale}, sender+nonce dup dropped {dup} (local policy)"
                 );
             }
             let seal_result = if sealing_allowed {
+                let NodeInner {
+                    chain,
+                    pool,
+                    ..
+                } = &mut *g;
                 chain.append_block_from_mempool_pending_removal(pool, 64, now)
             } else {
                 Ok(None)
             };
-            match seal_result {
+            let sealed_block = match seal_result {
                 Ok(None) => None,
                 Ok(Some(hashes)) => {
                     let n = hashes.len();
-                    let tip = chain.blocks().last().expect("tip after append").clone();
-                    match store.append_block(&tip) {
+                    let tip = g.chain.blocks().last().expect("tip after append").clone();
+                    match g.store.append_block(&tip) {
                         Ok(()) => {
-                            pool.remove_by_tx_hashes(hashes.iter().map(|s| s.as_str()));
+                            g.pool
+                                .remove_by_tx_hashes(hashes.iter().map(|s| s.as_str()));
                             eprintln!(
                                 "{PFX_SEAL} committed height={} with {n} transaction(s)",
-                                chain.height()
+                                g.chain.height()
                             );
                             Some(tip)
                         }
                         Err(e) => {
-                            if let Err(r) = chain.rollback_last_block(genesis) {
+                            let genesis = g.genesis.clone();
+                            if let Err(r) = g.chain.rollback_last_block(&genesis) {
                                 eprintln!(
                                     "{PFX_STORAGE} FATAL: persist block failed ({e}); in-memory rollback failed ({r}) — disk and memory may disagree; stop and repair chain.blocks"
                                 );
@@ -682,7 +692,8 @@ fn cmd_run(
                     eprintln!(
                         "{PFX_SEAL} seal attempt failed (no block committed; mempool consistent with pre-seal rules): {e}"
                     );
-                    let (fifo, stale, dup) = pool.hygiene_vs_committed_ledger(chain.state());
+                    let committed = g.chain.state().clone();
+                    let (fifo, stale, dup) = g.pool.hygiene_vs_committed_ledger(&committed);
                     if fifo > 0 || stale > 0 || dup > 0 {
                         eprintln!(
                             "{PFX_MEMPOOL} after failed seal: FIFO-cleaned {fifo}, stale-nonce dropped {stale}, sender+nonce dup dropped {dup} (local policy)"
@@ -690,15 +701,23 @@ fn cmd_run(
                     }
                     None
                 }
+            };
+
+            let now_sync = unix_now_secs();
+            if !peers_for_gossip.is_empty() {
                 let targets = g.peer_book.sync_candidates(&peers_for_gossip);
                 let filtered = g.peer_book.filter_available(&targets, now_sync);
                 for p in &filtered {
-                    match node::network::sync_from_peer(&mut g, p, now_sync) {
-                        Ok(n) if n > 0 => {
-                            node::diag::line("sync", format!("+{n} block(s) from {p}"));
+                    match node::network::sync_from_peer(&mut g, p, &sync_budget) {
+                        Ok(out) => {
+                            if out.blocks_appended > 0 {
+                                node::diag::line(
+                                    "sync",
+                                    format!("+{} block(s) from {p}", out.blocks_appended),
+                                );
+                            }
                             g.peer_book.record_ok(p);
                         }
-                        Ok(_) => g.peer_book.record_ok(p),
                         Err(e) if e.starts_with(node::network::FATAL_SYNC_PREFIX) => {
                             drop(g);
                             return Err(e);

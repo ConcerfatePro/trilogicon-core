@@ -96,7 +96,7 @@ fn cold_start_genesis_only_missing_chain_file_height_zero() {
 
     let chain_path = dir.join("chain.blocks");
     assert!(!chain_path.exists());
-    let c = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (c, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(c.height(), 0);
     verify_or_create_binding(&dir, &g).unwrap();
     let _ = fs::remove_dir_all(&dir);
@@ -123,7 +123,7 @@ fn replay_equivalence_multiblock_reload_matches_built_chain() {
     }
     drop(store);
 
-    let loaded = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (loaded, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(loaded.height(), 3);
     assert_eq!(loaded.blocks().last().unwrap().block_hash, chain.blocks().last().unwrap().block_hash);
     assert_eq!(
@@ -147,8 +147,8 @@ fn reload_idempotent_two_reads_same_tip_and_state() {
     store.append_block(&b1).unwrap();
     drop(store);
 
-    let a = load_blockchain_from_disk(&chain_path, &g).unwrap();
-    let b = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (a, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (b, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(a.height(), b.height());
     assert_eq!(
         a.blocks().last().unwrap().block_hash,
@@ -234,7 +234,7 @@ fn binding_verify_idempotent_after_chain_persisted() {
     drop(store);
 
     verify_or_create_binding(&dir, &g).unwrap();
-    let c = load_blockchain_from_disk(&chain_path, &g).unwrap();
+    let (c, _) = load_blockchain_from_disk(&chain_path, &g).unwrap();
     assert_eq!(c.height(), 1);
     verify_or_create_binding(&dir, &g).unwrap();
     let _ = fs::remove_dir_all(&dir);

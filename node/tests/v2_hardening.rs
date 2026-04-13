@@ -177,6 +177,9 @@ fn sync_block_budget_stops_cleanly_then_second_call_finishes() {
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(10),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
 
     let tight = SyncWorkBudget {
@@ -239,6 +242,9 @@ fn sync_soft_byte_budget_smaller_than_one_response_still_makes_progress() {
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(10),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
 
     let tiny_wire = SyncWorkBudget {
@@ -305,6 +311,9 @@ fn sync_wire_byte_budget_exact_response_size_stops_before_second_pull_same_call(
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(10),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
 
     let budget = SyncWorkBudget {
@@ -374,6 +383,9 @@ fn sync_from_peer_refreshes_clock_per_appended_block() {
         chain: Blockchain::from_genesis(&g).unwrap(),
         pool: Mempool::new(10),
         store: BlockStore::open_append(&path).unwrap(),
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
 
     let calls = Cell::new(0u32);
@@ -436,6 +448,9 @@ fn invalid_block_budget_disconnects_after_repeated_bad_next_blocks() {
         chain,
         pool: Mempool::new(10),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }));
 
     let policy = InboundPeerPolicy {
@@ -494,6 +509,9 @@ fn stale_low_height_blocks_do_not_consume_invalid_block_budget() {
         chain,
         pool: Mempool::new(10),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }));
 
     let policy = InboundPeerPolicy {

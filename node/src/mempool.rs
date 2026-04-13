@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use crate::errors::ProtocolError;
 use crate::operator_msg::PFX_MEMPOOL;
@@ -22,9 +22,9 @@ use crate::types::Address;
 ///
 /// ## Seal-time policy (`ordered_candidates_for_seal` / [`crate::blockchain::Blockchain::append_block_from_mempool`])
 ///
-/// When building a block, the node walks submission order and **simulates**
-/// [`State::apply_transaction`] on a **clone** of chain state; only txs that apply successfully in
-/// that walk are included. Nonce gaps for one sender do not block other senders (see mempool tests).
+/// Walks FIFO order on a **clone** of chain state: **skips** future-nonce head-of-line gaps, **errors**
+/// on stale nonces or on the next expected nonce that fails to apply (atomic prefix), and **skips**
+/// txs that cannot apply yet (e.g. missing sender). See unit tests and `v2_hardening`.
 ///
 /// Documented gate checklist: [`docs/v1_checkpoint.md`](../../docs/v1_checkpoint.md).
 pub struct Mempool {
@@ -82,8 +82,46 @@ impl Mempool {
         if self.txs.contains_key(&tx.tx_hash) {
             return Err(ProtocolError::DuplicateTransaction);
         }
-        if self.txs.iter().any(|t| t.sender == tx.sender && t.nonce == tx.nonce) {
-            return Err(ProtocolError::MempoolSenderNonceConflict);
+        if let Some(m) = self.by_sender.get(&tx.sender) {
+            if let Some(existing) = m.get(&tx.nonce) {
+                if existing != &tx.tx_hash {
+                    return Err(ProtocolError::MempoolNonceConflict);
+                }
+            }
+        }
+        while self.txs.len() >= self.capacity {
+            self.evict_oldest();
+            if self.txs.is_empty() {
+                break;
+            }
+        }
+        if self.txs.len() >= self.capacity {
+            return Err(ProtocolError::MempoolFull);
+        }
+        let h = tx.tx_hash.clone();
+        self.by_sender
+            .entry(tx.sender.clone())
+            .or_default()
+            .insert(tx.nonce, h.clone());
+        self.txs.insert(h.clone(), tx);
+        self.order.push_back(h);
+        Ok(())
+    }
+
+    /// Like [`Self::try_submit`] but does **not** evict existing txs when at capacity. Used when
+    /// draining `pending_tx.tril` so a full mempool does not drop in-flight peer submissions to
+    /// admit file-backed txs (head-of-line blocking).
+    pub fn try_submit_pending_drain(&mut self, tx: Transaction) -> Result<(), ProtocolError> {
+        tx.basic_validate()?;
+        if self.txs.contains_key(&tx.tx_hash) {
+            return Err(ProtocolError::DuplicateTransaction);
+        }
+        if let Some(m) = self.by_sender.get(&tx.sender) {
+            if let Some(existing) = m.get(&tx.nonce) {
+                if existing != &tx.tx_hash {
+                    return Err(ProtocolError::MempoolNonceConflict);
+                }
+            }
         }
         if self.txs.len() >= self.capacity {
             return Err(ProtocolError::MempoolFull);
@@ -107,9 +145,20 @@ impl Mempool {
             .collect()
     }
 
-    /// Walk submission order; include txs that apply successfully on a clone of `state`
-    /// (respects per-sender nonce progression within one block).
-    pub fn ordered_candidates_for_seal(&self, state: &State, max: usize) -> Vec<Transaction> {
+    /// Walk submission order to build the next block on a clone of `state`.
+    ///
+    /// - Skips txs with **future nonce** (`tx.nonce > committed sender nonce`) so a head-of-line gap
+    ///   for one sender does not block later txs (including other senders or lower nonces still in
+    ///   the FIFO).
+    /// - Returns [`Err`] if a tx is **stale** (`tx.nonce < committed nonce`) or is the expected
+    ///   next nonce for its sender but **does not apply** (e.g. insufficient balance): the atomic
+    ///   FIFO-prefix seal cannot proceed past that point.
+    /// - Skips txs that fail before a nonce match (e.g. missing sender on empty genesis).
+    pub fn ordered_candidates_for_seal(
+        &self,
+        state: &State,
+        max: usize,
+    ) -> Result<Vec<Transaction>, ProtocolError> {
         let mut s = state.clone();
         let mut out = Vec::new();
         for h in &self.order {
@@ -119,11 +168,24 @@ impl Mempool {
             let Some(tx) = self.txs.get(h) else {
                 continue;
             };
-            if s.apply_transaction(tx).is_ok() {
-                out.push(tx.clone());
+            let expected_nonce = s.get_account(&tx.sender).map(|a| a.nonce);
+            match expected_nonce {
+                None => {
+                    if s.apply_transaction(tx).is_ok() {
+                        out.push(tx.clone());
+                    }
+                }
+                Some(n) if tx.nonce > n => {}
+                Some(n) if tx.nonce < n => {
+                    return Err(ProtocolError::InvalidNonce);
+                }
+                Some(_) => match s.apply_transaction(tx) {
+                    Ok(()) => out.push(tx.clone()),
+                    Err(e) => return Err(e),
+                },
             }
         }
-        out
+        Ok(out)
     }
 
     /// Drop transactions that were committed in a block (or otherwise finalized).
@@ -137,11 +199,25 @@ impl Mempool {
 
     /// FIFO snapshot for rollback (e.g. pending-file drain or seal paths).
     pub(crate) fn clone_fifo(&self) -> VecDeque<Transaction> {
-        self.txs.clone()
+        self.order
+            .iter()
+            .filter_map(|h| self.txs.get(h).cloned())
+            .collect()
     }
 
     pub(crate) fn restore_fifo(&mut self, txs: VecDeque<Transaction>) {
-        self.txs = txs;
+        self.txs.clear();
+        self.order.clear();
+        self.by_sender.clear();
+        for tx in txs {
+            let h = tx.tx_hash.clone();
+            self.by_sender
+                .entry(tx.sender.clone())
+                .or_default()
+                .insert(tx.nonce, h.clone());
+            self.txs.insert(h.clone(), tx);
+            self.order.push_back(h);
+        }
     }
 
     /// Drop from the FIFO **head** transactions that are **not executable as the next tx on the
@@ -165,13 +241,22 @@ impl Mempool {
     pub fn purge_nonviable_under_committed_state(&mut self, committed: &State) -> usize {
         let state = committed;
         let mut removed = 0usize;
-        while let Some(tx) = self.txs.front() {
+        loop {
+            let head_hash = match self.order.front().cloned() {
+                Some(h) => h,
+                None => break,
+            };
+            let Some(tx) = self.txs.get(&head_hash).cloned() else {
+                self.order.pop_front();
+                continue;
+            };
             if let Err(e) = tx.basic_validate() {
                 eprintln!(
                     "{PFX_MEMPOOL} dropping front tx {} (basic_validate: {e}) — local queue hygiene vs committed ledger",
                     tx.tx_hash
                 );
-                self.txs.pop_front();
+                self.order.pop_front();
+                self.remove_tx_hash(&head_hash);
                 removed += 1;
                 continue;
             }
@@ -180,7 +265,8 @@ impl Mempool {
                     "{PFX_MEMPOOL} dropping front tx {} (no sender on committed ledger — not queued for future funding)",
                     tx.tx_hash
                 );
-                self.txs.pop_front();
+                self.order.pop_front();
+                self.remove_tx_hash(&head_hash);
                 removed += 1;
                 continue;
             };
@@ -189,7 +275,8 @@ impl Mempool {
                     "{PFX_MEMPOOL} dropping front tx {} (stale nonce {} < {})",
                     tx.tx_hash, tx.nonce, acc.nonce
                 );
-                self.txs.pop_front();
+                self.order.pop_front();
+                self.remove_tx_hash(&head_hash);
                 removed += 1;
                 continue;
             }
@@ -203,7 +290,8 @@ impl Mempool {
                         "{PFX_MEMPOOL} dropping front tx {} (amount+fee overflow)",
                         tx.tx_hash
                     );
-                    self.txs.pop_front();
+                    self.order.pop_front();
+                    self.remove_tx_hash(&head_hash);
                     removed += 1;
                     continue;
                 }
@@ -213,7 +301,8 @@ impl Mempool {
                     "{PFX_MEMPOOL} dropping front tx {} (insufficient balance on committed ledger — not queued for future income)",
                     tx.tx_hash
                 );
-                self.txs.pop_front();
+                self.order.pop_front();
+                self.remove_tx_hash(&head_hash);
                 removed += 1;
                 continue;
             }
@@ -229,41 +318,47 @@ impl Mempool {
     /// not drop `nonce > account.nonce` gap entries — same rules as
     /// [`Self::purge_nonviable_under_committed_state`] for heads.
     pub fn drop_stale_nonces_vs_committed(&mut self, committed: &State) -> usize {
-        let before = self.txs.len();
-        self.txs.retain(|tx| {
-            match committed.get_account(&tx.sender) {
-                Some(acc) if tx.nonce < acc.nonce => {
+        let mut to_remove: Vec<String> = Vec::new();
+        for tx in self.txs.values() {
+            if let Some(acc) = committed.get_account(&tx.sender) {
+                if tx.nonce < acc.nonce {
                     eprintln!(
                         "{PFX_MEMPOOL} dropping tx {} (stale nonce {} < committed {}) — global queue hygiene",
                         tx.tx_hash, tx.nonce, acc.nonce
                     );
-                    false
+                    to_remove.push(tx.tx_hash.clone());
                 }
-                _ => true,
             }
-        });
-        before.saturating_sub(self.txs.len())
+        }
+        let n = to_remove.len();
+        self.remove_by_tx_hashes(to_remove.iter().map(|s| s.as_str()));
+        n
     }
 
     /// Drop later queued txs that reuse a `(sender, nonce)` already taken earlier in the FIFO
     /// (local policy; first submission wins).
     pub fn drop_later_sender_nonce_conflicts_keep_fifo_first(&mut self) -> usize {
         let mut seen: HashSet<(crate::types::Address, u64)> = HashSet::new();
-        let mut removed = 0usize;
-        self.txs.retain(|tx| {
+        let mut to_remove: Vec<String> = Vec::new();
+        for h in &self.order {
+            let Some(tx) = self.txs.get(h) else {
+                continue;
+            };
             let key = (tx.sender.clone(), tx.nonce);
-            if seen.insert(key) {
-                true
-            } else {
+            if !seen.insert(key) {
                 eprintln!(
                     "{PFX_MEMPOOL} dropping tx {} (duplicate sender+nonce vs an earlier queued tx; local FIFO policy)",
                     tx.tx_hash
                 );
-                removed += 1;
-                false
+                to_remove.push(h.clone());
             }
-        });
-        removed
+        }
+        let n = to_remove.len();
+        for h in to_remove {
+            self.remove_tx_hash(&h);
+        }
+        self.order.retain(|x| self.txs.contains_key(x));
+        n
     }
 
     /// Front-of-line purge then global stale-nonce removal vs `committed` (local policy only).
@@ -509,7 +604,7 @@ mod tests {
         pool.try_submit(first.clone()).unwrap();
         assert!(matches!(
             pool.try_submit(second),
-            Err(ProtocolError::MempoolSenderNonceConflict)
+            Err(ProtocolError::MempoolNonceConflict)
         ));
         assert_eq!(pool.len(), 1);
         assert_eq!(pool.ordered_candidates(1)[0].tx_hash, first.tx_hash);

@@ -83,6 +83,9 @@ fn stale_decoded_blocks_quota_disconnects_without_invalid_block_strikes() {
         chain,
         pool: Mempool::new(10),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }));
 
     let policy = InboundPeerPolicy {
@@ -164,6 +167,9 @@ fn inbound_tx_decode_quota_disconnects_typed_not_protocol_budget() {
         chain,
         pool: Mempool::new(10),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }));
 
     let policy = InboundPeerPolicy {

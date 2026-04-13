@@ -24,16 +24,23 @@ use std::time::Duration;
 
 use crate::block::Block;
 use crate::blockchain::Blockchain;
-use crate::diag;
 use crate::encoding::{decode_block, decode_transaction, encode_block, encode_transaction};
 use crate::genesis::Genesis;
 use crate::mempool::Mempool;
 use crate::operator_msg::{PFX_MEMPOOL, PFX_PEER, PFX_STORAGE, PFX_SYNC};
+use crate::peer_book::PeerBook;
+use crate::seen::SeenCache;
 use crate::storage::BlockStore;
 use crate::transaction::Transaction;
 
 /// Outer framed message size cap (hostile allocation bound).
 pub const MAX_WIRE_FRAME_BYTES: u32 = 64 * 1024 * 1024;
+
+/// Max framed messages processed on one inbound TCP session (anti-DoS).
+pub const MAX_FRAMES_PER_INBOUND_SESSION: u32 = 8192;
+
+/// Prefix on [`sync_from_peer`] errors when the operator should stop (e.g. rollback after persist failed).
+pub const FATAL_SYNC_PREFIX: &str = "FATAL:";
 
 /// Maximum blocks in one `OP_BLOCKS` batch (defensive; not a consensus rule).
 pub const MAX_BLOCKS_PER_BATCH: u32 = 64;
@@ -217,6 +224,10 @@ pub const OP_GET_BLOCKS: u8 = 3;
 pub const OP_BLOCKS: u8 = 4;
 pub const OP_SESSION_HELLO: u8 = 5;
 pub const OP_SESSION_HELLO_ACK: u8 = 6;
+/// Test / tooling alias (same as [`OP_SESSION_HELLO`]).
+pub const OP_HELLO: u8 = OP_SESSION_HELLO;
+/// Test / tooling alias (same as [`OP_SESSION_HELLO_ACK`]).
+pub const OP_HELLO_OK: u8 = OP_SESSION_HELLO_ACK;
 
 /// Local operational limits for **inbound** peer sessions (not consensus).
 #[derive(Clone, Copy, Debug)]
@@ -352,10 +363,8 @@ impl NodeInner {
         pool: Mempool,
         store: BlockStore,
     ) -> Result<Self, String> {
-        let wire = WireRuntimeConfig::from_genesis(&genesis, 1, false)?;
         Ok(Self {
             genesis,
-            wire,
             chain,
             pool,
             store,
@@ -905,7 +914,6 @@ pub fn peer_connection_loop(
     let mut stale_decoded_blocks: u32 = 0;
     let mut inbound_tx_decoded: u32 = 0;
 
-    let mut first = true;
     let mut frames_seen: u32 = 0;
     loop {
         frames_seen = frames_seen.saturating_add(1);
@@ -1553,6 +1561,9 @@ mod tests {
             chain,
             pool: Mempool::new(10),
             store,
+            seen_tx: SeenCache::new(50_000),
+            seen_block: SeenCache::new(50_000),
+            peer_book: PeerBook::default(),
         };
         inner.store.mark_poisoned_for_tests();
         let err = sync_from_peer(&mut inner, "127.0.0.1:9", &SyncWorkBudget::default()).unwrap_err();

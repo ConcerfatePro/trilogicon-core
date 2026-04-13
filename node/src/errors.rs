@@ -13,8 +13,6 @@ pub enum ProtocolError {
     StateError(String),
     /// Mempool already holds this transaction id.
     DuplicateTransaction,
-    /// Mempool already holds a different transaction for the same sender and nonce (local FIFO policy).
-    MempoolSenderNonceConflict,
     /// Mempool has reached its configured capacity.
     MempoolFull,
     /// Another pending transaction already uses this sender and nonce (different tx id).
@@ -35,10 +33,6 @@ impl fmt::Display for ProtocolError {
             Self::InvalidBlock(msg) => write!(f, "invalid block: {msg}"),
             Self::StateError(msg) => write!(f, "state error: {msg}"),
             Self::DuplicateTransaction => write!(f, "duplicate transaction"),
-            Self::MempoolSenderNonceConflict => write!(
-                f,
-                "mempool sender+nonce conflict (another queued tx already occupies this nonce)"
-            ),
             Self::MempoolFull => write!(f, "mempool full"),
             Self::MempoolNonceConflict => write!(f, "mempool nonce conflict"),
             Self::GenesisError(msg) => write!(f, "genesis error: {msg}"),

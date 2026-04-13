@@ -204,7 +204,7 @@ impl Blockchain {
         max_transactions: usize,
         timestamp_unix: u64,
     ) -> Result<Option<Vec<String>>, ProtocolError> {
-        let txs = mempool.ordered_candidates(max_transactions);
+        let txs = mempool.ordered_candidates_for_seal(&self.state, max_transactions)?;
         if txs.is_empty() {
             return Ok(None);
         }

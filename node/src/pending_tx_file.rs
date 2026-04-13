@@ -163,7 +163,7 @@ pub fn drain_pending_file(path: &Path, pool: &mut Mempool) -> Result<(), String>
     let mut i = 0usize;
     while i < txs.len() {
         let tx = txs[i].clone();
-        match pool.try_submit(tx) {
+        match pool.try_submit_pending_drain(tx) {
             Ok(()) => i += 1,
             Err(ProtocolError::DuplicateTransaction) => i += 1,
             Err(_) => break,

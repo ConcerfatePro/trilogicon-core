@@ -41,6 +41,9 @@ fn minimal_state() -> Arc<Mutex<NodeInner>> {
         chain,
         pool: Mempool::new(10),
         store,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }))
 }
 

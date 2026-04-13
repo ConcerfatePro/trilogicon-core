@@ -119,6 +119,9 @@ fn two_nodes_converge_without_manual_funding() {
         chain: chain_a,
         pool: Mempool::new(100),
         store: store_a,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     }));
 
     let (_jh, listen_addr) =
@@ -132,6 +135,9 @@ fn two_nodes_converge_without_manual_funding() {
         chain: chain_b,
         pool: Mempool::new(100),
         store: store_b,
+        seen_tx: node::seen::SeenCache::new(50_000),
+        seen_block: node::seen::SeenCache::new(50_000),
+        peer_book: node::peer_book::PeerBook::default(),
     };
 
     let out = sync_from_peer(&mut inner_b, &listen_addr, &SyncWorkBudget::default()).unwrap();

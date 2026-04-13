@@ -257,8 +257,9 @@ impl BlockStore {
         }
     }
 
-    /// Like [`Self::read_all_blocks`], but if the file ends with a partial frame, truncates the file
-    /// to the last complete frame and returns `repaired = true`.
+    /// Like [`Self::read_all_blocks`], but if the file ends with 1–3 trailing bytes after the last
+    /// complete frame (incomplete length prefix), truncates them and returns `repaired = true`.
+    /// A full length prefix for an incomplete next frame returns [`StorageError::Decode`].
     pub fn read_all_blocks_repairing_tail(
         path: impl AsRef<Path>,
     ) -> Result<(Vec<Block>, bool), StorageError> {
@@ -267,35 +268,110 @@ impl BlockStore {
             return Ok((Vec::new(), false));
         }
         let mut data = fs::read(path)?;
-        let mut out = Vec::new();
-        let mut pos = 0usize;
-        let mut valid_end = 0usize;
-        while pos < data.len() {
-            if pos + 4 > data.len() {
-                break;
-            }
-            let len = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
-                as usize;
-            pos += 4;
-            if len as u32 > MAX_FRAME_BYTES {
-                return Err(StorageError::Decode("frame exceeds max size".into()));
-            }
-            if pos + len > data.len() {
-                break;
-            }
-            let payload = &data[pos..pos + len];
-            let block = decode_block(payload)?;
-            out.push(block);
-            pos += len;
-            valid_end = pos;
+        if data.is_empty() {
+            return Ok((Vec::new(), false));
         }
+        let (format, body_off) = if data.len() >= CHAIN_FILE_MAGIC_V2.len()
+            && data[..CHAIN_FILE_MAGIC_V2.len()] == *CHAIN_FILE_MAGIC_V2
+        {
+            (ChainFileFormat::V2, CHAIN_FILE_MAGIC_V2.len())
+        } else {
+            (ChainFileFormat::Legacy, 0usize)
+        };
+        let body = &data[body_off..];
+        let (blocks, consumed_in_body) = match format {
+            ChainFileFormat::Legacy => parse_legacy_block_frames_prefix(body)?,
+            ChainFileFormat::V2 => parse_v2_block_frames_prefix(body)?,
+        };
+        let valid_end = body_off + consumed_in_body;
         let repaired = valid_end < data.len();
         if repaired {
+            if blocks.is_empty() && consumed_in_body == 0 {
+                return Err(StorageError::Decode(
+                    "chain.blocks corrupt or truncated (no complete block frame)".into(),
+                ));
+            }
+            let trailing = data.len() - valid_end;
+            // If at least a full u32 length prefix is present after the last good frame, we are
+            // unambiguously inside a subsequent frame; refuse silent truncation (crash-safe repair
+            // only covers a short, incomplete length write: < 4 bytes).
+            if trailing >= 4 {
+                return Err(StorageError::Decode(
+                    "chain.blocks truncated after last complete block frame".into(),
+                ));
+            }
             data.truncate(valid_end);
             fs::write(path, &data)?;
         }
-        Ok((out, repaired))
+        Ok((blocks, repaired))
     }
+}
+
+/// Parse complete legacy frames from the start of `data`; stop before the first partial frame.
+fn parse_legacy_block_frames_prefix(data: &[u8]) -> Result<(Vec<Block>, usize), StorageError> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let frame_start = pos;
+        if pos + 4 > data.len() {
+            break;
+        }
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        if len as u32 > MAX_FRAME_BYTES {
+            return Err(StorageError::Decode("frame exceeds max size".into()));
+        }
+        if pos + len > data.len() {
+            return Ok((out, frame_start));
+        }
+        let payload = &data[pos..pos + len];
+        pos += len;
+        let block = decode_block(payload)?;
+        out.push(block);
+    }
+    Ok((out, pos))
+}
+
+/// Parse complete V2 frames from the start of `data` (no magic; body only); stop before partial.
+fn parse_v2_block_frames_prefix(data: &[u8]) -> Result<(Vec<Block>, usize), StorageError> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while pos < data.len() {
+        let frame_start = pos;
+        if pos + 4 > data.len() {
+            break;
+        }
+        let len =
+            u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        if len as u32 > MAX_FRAME_BYTES {
+            return Err(StorageError::Decode("frame exceeds max size (v2)".into()));
+        }
+        let end_payload = pos.checked_add(len).ok_or_else(|| {
+            StorageError::Decode("v2 frame length overflow".into())
+        })?;
+        if end_payload + 4 > data.len() {
+            return Ok((out, frame_start));
+        }
+        let payload = &data[pos..end_payload];
+        let stored_crc = u32::from_be_bytes([
+            data[end_payload],
+            data[end_payload + 1],
+            data[end_payload + 2],
+            data[end_payload + 3],
+        ]);
+        let expect = crc32_ieee(payload);
+        if stored_crc != expect {
+            return Err(StorageError::Decode(format!(
+                "v2 frame crc mismatch (stored {stored_crc:#x} != expected {expect:#x})"
+            )));
+        }
+        pos = end_payload + 4;
+        let block = decode_block(payload)?;
+        out.push(block);
+    }
+    Ok((out, pos))
 }
 
 fn parse_legacy_block_frames(data: &[u8]) -> Result<Vec<Block>, StorageError> {
@@ -371,8 +447,9 @@ fn chain_from_genesis(genesis: &Genesis) -> Result<Blockchain, StorageError> {
 /// Build chain from `genesis` (height-0 state), then apply every stored block in file order.
 /// Empty or missing file → chain is genesis tip only.
 ///
-/// If the file ends with a partial frame or trailing bytes after the last complete block, the tail is
-/// truncated to the last good frame on disk and the second return value is `true`.
+/// If the file ends with fewer than four trailing bytes after the last complete block (incomplete
+/// length prefix only), those bytes are truncated and the second return value is `true`. A full
+/// length prefix for a partial next frame is rejected (fail closed).
 pub fn load_blockchain_from_disk(
     path: impl AsRef<Path>,
     genesis: &Genesis,
@@ -518,14 +595,19 @@ mod tests {
     }
 
     #[test]
-    fn truncated_length_prefix_repairs_on_load() {
+    fn truncated_length_prefix_without_complete_frame_fails_closed() {
         let path = unique_store_path("trunc");
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, [0u8, 0u8, 0u8, 0x10]).unwrap();
-        let (chain, repaired) = load_blockchain_from_disk(&path, &Genesis::empty()).unwrap();
-        assert!(repaired);
-        assert_eq!(chain.height(), 0);
-        assert!(BlockStore::read_all_blocks(&path).unwrap().is_empty());
+        let err = match load_blockchain_from_disk(&path, &Genesis::empty()) {
+            Err(e) => e,
+            Ok(_) => panic!("expected corrupt chain file to fail load"),
+        };
+        let s = err.to_string();
+        assert!(
+            s.contains("corrupt") || s.contains("truncated"),
+            "unexpected err: {s}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -716,7 +798,7 @@ mod tests {
         }
 
         let loaded = load_blockchain_from_disk(&path, &genesis).unwrap();
-        assert_eq!(loaded.height(), 1);
+        assert_eq!(loaded.0.height(), 1);
         let _ = std::fs::remove_file(&path);
     }
 
