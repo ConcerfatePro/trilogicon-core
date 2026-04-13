@@ -136,16 +136,14 @@ That means Trilogicon v1 should avoid ambiguous serialization, hidden defaults, 
 
 The network must support grouping transactions into blocks.
 
-In v1 rc1, a block contains protocol-defined data such as:
+A block contains protocol-defined data:
 - block height
 - previous block hash
 - timestamp
 - ordered transaction list
-- block hash
+- block hash (must match the canonical header preimage)
 
-V1 rc1 does **not** require producer identity, miner identity, or a separate proof or eligibility field on the wire.
-
-The block hash boundary must be defined only by the fields that are actually part of the implemented block format.
+V1 blocks do **not** carry a separate in-header producer identity or consensus proof field; sealing is handled by the node implementation under `docs/protocol_overview.md`.
 
 ### 8. Block validation
 
@@ -179,9 +177,8 @@ Transactions in v1 should include an explicit fee field.
 
 At minimum, the fee exists to:
 - help discourage spam
+- support basic transaction selection policy
 - make transfer accounting explicit
-
-In v1 rc1, fees are present in transaction accounting, but they do **not** define fee-prioritized transaction ordering or fee-based inclusion policy.
 
 The exact fee destination and handling rules should be documented clearly in protocol behavior.
 
@@ -190,16 +187,8 @@ The exact fee destination and handling rules should be documented clearly in pro
 Trilogicon v1 should use a practical and clearly documented consensus baseline that supports:
 - block production
 - block validation
+- chain comparison
 - node synchronization
-- strict extension of the active chain tip
-
-In v1 rc1, the consensus posture is intentionally narrow.
-
-A candidate block is accepted only when:
-- its height is exactly the next expected height
-- its previous hash matches the current active tip exactly
-
-V1 rc1 does **not** claim a general multi-branch fork-choice rule or a full reorganization protocol.
 
 V1 does **not** need to solve every advanced consensus problem immediately.
 
@@ -239,18 +228,6 @@ The following are intentionally **out of scope** for Trilogicon v1:
 
 These are excluded because they would increase complexity before the core transfer system is fully proven.
 
-## What V1 does not guarantee
-
-V1 is a minimal correctness-and-sync baseline, not a production security audit or a complete adversarial threat model. The design targets **honest nodes, shared genesis, and explicit protocol rules**. It does **not** promise:
-
-- **Decentralization or robustness under attack** — Deployments are not claimed to resist eclipse attacks, Sybil-dominated peer sets, or well-resourced network adversaries.
-- **Partition and healing behavior** — Connectivity splits, stale tips, and operator recovery are not fully specified; nodes may require manual intervention.
-- **Strong DoS resistance** — Framing limits, sync caps, and mempool bounds **mitigate** abuse; they do not make an internet-facing node invulnerable.
-- **Global finality beyond local rules** — Acceptance is strict tip extension only; there is no general fork-choice or reorg protocol in V1 rc1.
-- **Wallet and operational security** — Key material lives in local files; backup, permissions, and compromise handling are operator responsibilities.
-
-Honest nodes using the same genesis and validation code still **agree on validity** for the same chain data under the documented rules. The limits above concern **deployment, adversaries, and unspecified environments**, not on-ledger rule ambiguity.
-
 ## What success looks like
 
 Trilogicon v1 is successful if it can do the following well:
@@ -277,7 +254,7 @@ Trilogicon is intended to grow through multiple versions.
 Simple, secure value transfer.
 
 ### V2
-Improved networking, synchronization, storage, and node reliability.
+**Node hardening** for the linear V1 protocol: peer/session safety, sync/catch-up, persistence/restart, local mempool hygiene, observability—**no** consensus or economics changes beyond [`v2_scope.md`](v2_scope.md) (protocol freeze).
 
 ### V3
 Stronger consensus and performance improvements.

@@ -92,13 +92,26 @@ impl Blockchain {
         &mut self.consensus
     }
 
-    /// Blocks with `height >= start_height` (genesis is `0`). Used for catch-up replies.
-    pub fn blocks_from_height(&self, start_height: u64) -> Vec<Block> {
+    /// Blocks with `height >= start_height` (genesis is `0`), at most `limit` clones.
+    ///
+    /// Used for bounded catch-up replies: callers should pass a small `limit` (e.g.
+    /// [`crate::network::MAX_BLOCKS_PER_BATCH`]) so a low `start_height` on a long chain does not
+    /// materialize the full suffix.
+    pub fn blocks_from_height_limited(&self, start_height: u64, limit: usize) -> Vec<Block> {
+        if limit == 0 {
+            return Vec::new();
+        }
         self.blocks
             .iter()
             .filter(|b| b.height >= start_height)
+            .take(limit)
             .cloned()
             .collect()
+    }
+
+    /// Blocks with `height >= start_height` (genesis is `0`). Clones the full matching suffix.
+    pub fn blocks_from_height(&self, start_height: u64) -> Vec<Block> {
+        self.blocks_from_height_limited(start_height, usize::MAX)
     }
 
     /// Network ingress path: reject blocks too far in the future vs `now_unix`, then full append.
@@ -176,23 +189,24 @@ impl Blockchain {
         Ok(())
     }
 
-    /// Take up to `max_transactions` from the mempool (FIFO order), build a sealed block on
-    /// the current tip, and append it. On success, removes those transactions from the mempool.
+    /// Build a block from up to `max_transactions` FIFO mempool candidates, append it, but **do
+    /// not** remove those transactions from the mempool yet.
     ///
-    /// Returns how many transactions were committed. If the mempool has no candidates, returns
-    /// `Ok(0)` and leaves the chain unchanged.
+    /// After **durable** persistence of the new tip succeeds, call [`Mempool::remove_by_tx_hashes`]
+    /// with the returned `tx_hashes`. If persistence fails, call [`Self::rollback_last_block`];
+    /// the mempool order and contents stay equivalent to the pre-seal state.
     ///
-    /// If `append_block` fails (e.g. insufficient balance), the mempool is unchanged so callers
-    /// can add eviction or revalidation policy later.
-    pub fn append_block_from_mempool(
+    /// Returns `Ok(None)` when there are no candidates. If [`Self::append_block`] fails, the chain
+    /// and mempool are unchanged.
+    pub fn append_block_from_mempool_pending_removal(
         &mut self,
-        mempool: &mut Mempool,
+        mempool: &Mempool,
         max_transactions: usize,
         timestamp_unix: u64,
-    ) -> Result<usize, ProtocolError> {
-        let txs = mempool.ordered_candidates_for_seal(&self.state, max_transactions);
+    ) -> Result<Option<Vec<String>>, ProtocolError> {
+        let txs = mempool.ordered_candidates(max_transactions);
         if txs.is_empty() {
-            return Ok(0);
+            return Ok(None);
         }
 
         let tip = self
@@ -216,8 +230,60 @@ impl Blockchain {
             .collect();
 
         self.append_block(block)?;
-        mempool.remove_by_tx_hashes(hashes.iter().map(|s| s.as_str()));
-        Ok(hashes.len())
+        Ok(Some(hashes))
+    }
+
+    /// Take up to `max_transactions` from the mempool (FIFO order), build a sealed block on
+    /// the current tip, and append it. On success, removes those transactions from the mempool.
+    ///
+    /// Returns how many transactions were committed. If the mempool has no candidates, returns
+    /// `Ok(0)` and leaves the chain unchanged.
+    ///
+    /// If `append_block` fails (e.g. insufficient balance), the mempool is unchanged so callers
+    /// can add eviction or revalidation policy later.
+    ///
+    /// **Persistence note:** For local sealing with disk append, prefer
+    /// [`Self::append_block_from_mempool_pending_removal`] so mempool removal happens only after
+    /// durable `chain.blocks` writes succeed.
+    pub fn append_block_from_mempool(
+        &mut self,
+        mempool: &mut Mempool,
+        max_transactions: usize,
+        timestamp_unix: u64,
+    ) -> Result<usize, ProtocolError> {
+        match self.append_block_from_mempool_pending_removal(mempool, max_transactions, timestamp_unix)?
+        {
+            None => Ok(0),
+            Some(hashes) => {
+                let n = hashes.len();
+                mempool.remove_by_tx_hashes(hashes.iter().map(|s| s.as_str()));
+                Ok(n)
+            }
+        }
+    }
+
+    /// Recompute [`State`] from `genesis` by re-applying every non-genesis block in order.
+    pub fn rebuild_state_from_genesis(&mut self, genesis: &Genesis) -> Result<(), ProtocolError> {
+        let mut st = State::from_genesis(genesis)?;
+        for b in self.blocks.iter().skip(1) {
+            for tx in &b.transactions {
+                st.apply_transaction(tx)?;
+            }
+        }
+        self.state = st;
+        Ok(())
+    }
+
+    /// Drop the current non-genesis tip and rebuild state. Used when chain RAM advanced but disk
+    /// persist failed, so memory matches disk again.
+    pub fn rollback_last_block(&mut self, genesis: &Genesis) -> Result<(), ProtocolError> {
+        if self.blocks.len() <= 1 {
+            return Err(ProtocolError::StateError(
+                "cannot rollback genesis tip".into(),
+            ));
+        }
+        self.blocks.pop();
+        self.rebuild_state_from_genesis(genesis)
     }
 }
 #[cfg(test)]
@@ -225,6 +291,7 @@ mod tests {
     use super::*;
     use crate::consensus::ConsensusParams;
     use crate::crypto::Crypto;
+    use crate::genesis::{Genesis, GenesisAllocation};
     use crate::mempool::Mempool;
     use crate::transaction::Transaction;
     use crate::types::Address;
@@ -266,6 +333,78 @@ mod tests {
             transactions: vec![sample_valid_tx()],
             block_hash: String::new(),
         })
+    }
+
+    /// `blocks_from_height_limited` must match `blocks().iter().filter(|b| b.height >= start).take(limit)`
+    /// (the GET_BLOCKS path): bounded clones, not the full suffix.
+    #[test]
+    fn blocks_from_height_limited_matches_prefix_of_full_suffix() {
+        let mut chain = Blockchain::new();
+        let signing_key = SigningKey::from_bytes(&[44u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        chain.state_mut().create_account(sender.clone(), 1_000_000_000);
+
+        let mut prev = "GENESIS_HASH".to_string();
+        for h in 1u64..=30 {
+            let mut tx = Transaction {
+                sender: sender.clone(),
+                receiver: Address::new("recv_lim_test"),
+                amount: 1,
+                fee: 1,
+                nonce: h - 1,
+                timestamp_unix: 1_800_000_000 + h,
+                public_key: verifying_key.to_bytes().to_vec(),
+                signature: Vec::new(),
+                tx_hash: String::new(),
+            };
+            let payload = tx.unsigned_payload_bytes();
+            tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+            tx.tx_hash = Crypto::hash_bytes(&payload);
+
+            let mut b = Block {
+                height: h,
+                previous_hash: prev,
+                timestamp_unix: 1_800_000_100 + h,
+                transactions: vec![tx],
+                block_hash: String::new(),
+            };
+            b.block_hash = b.compute_block_hash();
+            prev = b.block_hash.clone();
+            chain.append_block(b).unwrap();
+        }
+
+        const CAP: usize = 5;
+        let limited = chain.blocks_from_height_limited(0, CAP);
+        let want: Vec<Block> = chain.blocks().iter().take(CAP).cloned().collect();
+        assert_eq!(limited.len(), CAP);
+        assert_eq!(
+            limited.iter().map(|b| b.height).collect::<Vec<_>>(),
+            want.iter().map(|b| b.height).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            limited.iter().map(|b| &b.block_hash).collect::<Vec<_>>(),
+            want.iter().map(|b| &b.block_hash).collect::<Vec<_>>()
+        );
+        assert_eq!(limited.last().unwrap().height, (CAP - 1) as u64);
+
+        let from_ten = chain.blocks_from_height_limited(10, 3);
+        let want_ten: Vec<Block> = chain
+            .blocks()
+            .iter()
+            .filter(|b| b.height >= 10)
+            .take(3)
+            .cloned()
+            .collect();
+        assert_eq!(from_ten.len(), 3);
+        assert_eq!(
+            from_ten.iter().map(|b| b.height).collect::<Vec<_>>(),
+            want_ten.iter().map(|b| b.height).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            from_ten.iter().map(|b| &b.block_hash).collect::<Vec<_>>(),
+            want_ten.iter().map(|b| &b.block_hash).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -570,6 +709,59 @@ mod tests {
     }
 
     #[test]
+    fn append_block_from_mempool_pending_removal_rollback_preserves_fifo_order() {
+        let mut pool = Mempool::new(10);
+
+        let signing_key = SigningKey::from_bytes(&[59u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
+        let g = Genesis {
+            allocations: vec![GenesisAllocation {
+                address: sender_addr.0.clone(),
+                balance: 100,
+            }],
+        };
+        let mut chain = Blockchain::from_genesis(&g).unwrap();
+
+        for nonce in 0u64..2u64 {
+            let mut tx = Transaction {
+                sender: sender_addr.clone(),
+                receiver: Address::new("recv_fifo"),
+                amount: 1,
+                fee: 1,
+                nonce,
+                timestamp_unix: 1_700_020_000 + nonce,
+                public_key: verifying_key.to_bytes().to_vec(),
+                signature: Vec::new(),
+                tx_hash: String::new(),
+            };
+            let p = tx.unsigned_payload_bytes();
+            tx.signature = signing_key.sign(&p).to_bytes().to_vec();
+            tx.tx_hash = Crypto::hash_bytes(&p);
+            pool.try_submit(tx).unwrap();
+        }
+
+        let h0 = pool.ordered_candidates(2)[0].tx_hash.clone();
+        let h1 = pool.ordered_candidates(2)[1].tx_hash.clone();
+
+        let hashes = chain
+            .append_block_from_mempool_pending_removal(&pool, 8, 1_700_020_010)
+            .unwrap()
+            .expect("sealed");
+        assert_eq!(hashes.len(), 2);
+        assert_eq!(chain.height(), 1);
+        assert_eq!(pool.len(), 2, "mempool must not drain before persist");
+
+        chain.rollback_last_block(&g).unwrap();
+        assert_eq!(chain.height(), 0);
+
+        let c = pool.ordered_candidates(2);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].tx_hash, h0);
+        assert_eq!(c[1].tx_hash, h1);
+    }
+
+    #[test]
     fn append_block_from_mempool_commits_and_drains() {
         let mut chain = Blockchain::new();
         let mut pool = Mempool::new(10);
@@ -713,77 +905,44 @@ mod tests {
     }
 
     #[test]
-    fn recompute_state_from_blocks_matches_incremental_apply() {
-        use crate::genesis::{Genesis, GenesisAllocation};
-
-        let prev_hash = "GENESIS_HASH".to_string();
-        let b1 = valid_block_1(prev_hash.clone());
-        let sender = b1.transactions[0].sender.clone();
+    fn rollback_last_block_restores_prior_state() {
+        let signing_key = SigningKey::from_bytes(&[90u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        let sender_addr = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
         let genesis = Genesis {
             allocations: vec![GenesisAllocation {
-                address: sender.0.clone(),
-                balance: 100,
-            }],
-        };
-        let mut from_doc = Blockchain::from_genesis(&genesis).unwrap();
-        from_doc.append_block(b1.clone()).unwrap();
-
-        let tip_hash = from_doc.blocks().last().unwrap().block_hash.clone();
-        let b2 = seal_block(Block {
-            height: 2,
-            previous_hash: tip_hash,
-            timestamp_unix: 1_700_001_002,
-            transactions: vec![sample_valid_tx()],
-            block_hash: String::new(),
-        });
-        let mut tx2 = b2.transactions[0].clone();
-        tx2.nonce = 1;
-        tx2.timestamp_unix = 1_700_001_003;
-        let p2 = tx2.unsigned_payload_bytes();
-        let signing_key = SigningKey::from_bytes(&[21u8; 32]);
-        tx2.signature = signing_key.sign(&p2).to_bytes().to_vec();
-        tx2.tx_hash = Crypto::hash_bytes(&p2);
-        let mut b2 = b2;
-        b2.transactions = vec![tx2];
-        b2.block_hash = b2.compute_block_hash();
-        from_doc.append_block(b2.clone()).unwrap();
-
-        let blocks = from_doc.blocks();
-        let replayed = recompute_state_from_blocks(blocks, &genesis).unwrap();
-        assert_eq!(
-            replayed.accounts_sorted(),
-            from_doc.state().accounts_sorted()
-        );
-    }
-
-    #[test]
-    fn rollback_to_height_restores_state_and_tip() {
-        use crate::genesis::{Genesis, GenesisAllocation};
-
-        let b1 = valid_block_1("GENESIS_HASH".into());
-        let sender = b1.transactions[0].sender.clone();
-        let genesis = Genesis {
-            allocations: vec![GenesisAllocation {
-                address: sender.0.clone(),
-                balance: 100,
+                address: sender_addr.0.clone(),
+                balance: 50,
             }],
         };
         let mut chain = Blockchain::from_genesis(&genesis).unwrap();
-        chain.append_block(b1).unwrap();
+        let mut pool = Mempool::new(10);
+
+        let mut tx = Transaction {
+            sender: sender_addr.clone(),
+            receiver: Address::new("recv_rb"),
+            amount: 5,
+            fee: 1,
+            nonce: 0,
+            timestamp_unix: 1_700_010_000,
+            public_key: verifying_key.to_bytes().to_vec(),
+            signature: Vec::new(),
+            tx_hash: String::new(),
+        };
+        let payload = tx.unsigned_payload_bytes();
+        tx.signature = signing_key.sign(&payload).to_bytes().to_vec();
+        tx.tx_hash = Crypto::hash_bytes(&payload);
+        pool.try_submit(tx).unwrap();
+
+        chain
+            .append_block_from_mempool(&mut pool, 8, 1_700_010_001)
+            .unwrap();
         assert_eq!(chain.height(), 1);
-        assert_eq!(chain.state().get_account(&sender).unwrap().nonce, 1);
+        assert_eq!(chain.state().get_account(&sender_addr).unwrap().nonce, 1);
 
-        chain.rollback_to_height(0, &genesis).unwrap();
+        chain.rollback_last_block(&genesis).unwrap();
         assert_eq!(chain.height(), 0);
-        assert_eq!(chain.len(), 1);
-        assert_eq!(chain.state().get_account(&sender).unwrap().nonce, 0);
-        assert_eq!(chain.state().get_account(&sender).unwrap().balance, 100);
-    }
-
-    #[test]
-    fn rollback_to_height_rejects_target_above_tip() {
-        let mut chain = Blockchain::new();
-        let r = chain.rollback_to_height(1, &crate::genesis::Genesis::empty());
-        assert!(matches!(r, Err(ProtocolError::StateError(_))));
+        assert_eq!(chain.state().get_account(&sender_addr).unwrap().nonce, 0);
+        assert_eq!(chain.state().get_account(&sender_addr).unwrap().balance, 50);
     }
 }

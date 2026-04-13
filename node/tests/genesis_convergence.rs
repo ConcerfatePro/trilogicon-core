@@ -11,7 +11,9 @@ use node::block::Block;
 use node::blockchain::Blockchain;
 use node::genesis::{Genesis, GenesisAllocation};
 use node::mempool::Mempool;
-use node::network::{NodeInner, spawn_incoming_loop, sync_from_peer};
+use node::network::{
+    InboundPeerPolicy, NodeInner, spawn_incoming_loop, sync_from_peer, SyncWorkBudget,
+};
 use node::storage::BlockStore;
 use node::transaction::Transaction;
 use node::wallet::Wallet;
@@ -112,21 +114,28 @@ fn two_nodes_converge_without_manual_funding() {
     let mut store_a = BlockStore::open_append(&chain_path_a).unwrap();
     store_a.append_block(&block).unwrap();
 
-    let state_a = Arc::new(Mutex::new(
-        NodeInner::for_tests(genesis.clone(), chain_a, Mempool::new(100), store_a).unwrap(),
-    ));
+    let state_a = Arc::new(Mutex::new(NodeInner {
+        genesis: genesis.clone(),
+        chain: chain_a,
+        pool: Mempool::new(100),
+        store: store_a,
+    }));
 
-    let (_jh, listen_addr) = spawn_incoming_loop("127.0.0.1:0", state_a.clone()).unwrap();
+    let (_jh, listen_addr) =
+        spawn_incoming_loop("127.0.0.1:0", state_a.clone(), InboundPeerPolicy::default()).unwrap();
 
     // Follower: same genesis, empty blocks file — no manual funding of producer's key.
     let chain_b = Blockchain::from_genesis(&genesis).unwrap();
     let store_b = BlockStore::open_append(&chain_path_b).unwrap();
-    let mut inner_b =
-        NodeInner::for_tests(genesis.clone(), chain_b, Mempool::new(100), store_b).unwrap();
+    let mut inner_b = NodeInner {
+        genesis: genesis.clone(),
+        chain: chain_b,
+        pool: Mempool::new(100),
+        store: store_b,
+    };
 
-    let now = node::network::unix_now_secs();
-    let n = sync_from_peer(&mut inner_b, &listen_addr, now).unwrap();
-    assert_eq!(n, 1);
+    let out = sync_from_peer(&mut inner_b, &listen_addr, &SyncWorkBudget::default()).unwrap();
+    assert_eq!(out.blocks_appended, 1);
 
     let ga = state_a.lock().unwrap();
     assert_ledgers_equal(&ga.chain, &inner_b.chain);

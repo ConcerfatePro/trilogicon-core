@@ -8,6 +8,8 @@ This roadmap is intended to guide Trilogicon through a disciplined V1 build proc
 The goal is not to rush features.  
 The goal is to establish a reliable foundation.
 
+**V2 planning** (reliability, sync, persistence, operations—**not** consensus reinvention) lives in [`v2_scope.md`](v2_scope.md).
+
 ## Current progress snapshot
 
 - Phase 0 docs are in place (`vision`, `v1_scope`, `protocol_overview`, `design_principles`, `protocol_invariants`, `architecture`, `change_policies`).
@@ -264,4 +266,4 @@ V1 should be considered complete when:
 - replay protection works
 - blocks and chains validate correctly
 - multiple nodes can synchronize
-- the codebase is understandable enough to build V2 safely
+- the codebase is understandable enough to build V2 safely (see [`v2_scope.md`](v2_scope.md))

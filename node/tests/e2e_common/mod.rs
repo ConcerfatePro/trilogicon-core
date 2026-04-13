@@ -42,7 +42,7 @@ pub fn parse_init_address(stdout: &str) -> String {
     panic!("no 'Address:' line in init stdout:\n{stdout}");
 }
 
-/// Spawn a thread that reads all stdout lines; return the `network: listening on …` address before deadline.
+/// Spawn a thread that reads all stdout lines; return the listener address line before deadline.
 pub fn wait_listen_addr(out: impl std::io::Read + Send + 'static, deadline: Duration) -> String {
     let (found_tx, found_rx) = mpsc::channel::<String>();
     thread::spawn(move || {
@@ -50,7 +50,10 @@ pub fn wait_listen_addr(out: impl std::io::Read + Send + 'static, deadline: Dura
             let Ok(line) = line else {
                 break;
             };
-            if let Some(rest) = line.strip_prefix("network: listening on ") {
+            let rest = line
+                .strip_prefix("[peer] listening on ")
+                .or_else(|| line.strip_prefix("network: listening on "));
+            if let Some(rest) = rest {
                 let addr = rest.trim().to_string();
                 let _ = found_tx.send(addr);
             }

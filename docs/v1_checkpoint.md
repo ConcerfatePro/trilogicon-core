@@ -29,4 +29,4 @@ This checklist defines when the Trilogicon **V1 implementation** is considered c
 
 - [x] README or `docs/v1_scope.md` states what V1 explicitly does **not** guarantee (e.g. production decentralization, partition behavior, DoS resistance).
 
-These items track the **implementation gate** for the current codebase snapshot, not an independent security audit. When they remain satisfied after substantive changes, the team may treat **V1 implementation** as complete for planning V2.
+When every item above is checked, the team may call **V1 implementation complete** and plan **V2** from that baseline using [`v2_scope.md`](v2_scope.md).

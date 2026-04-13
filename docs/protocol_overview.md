@@ -91,15 +91,15 @@ A block groups valid transactions and extends the chain.
 
 ### Expected fields
 
-A V1 block includes:
+A V1 block in the **current** implementation and encoding consists of:
 
-- block height
-- previous block hash
-- timestamp
-- transaction list
-- block producer / proposer data
-- consensus-related proof or authority field
-- block hash
+- block height (`u64`)
+- previous block hash (hex string)
+- timestamp (`timestamp_unix`, seconds)
+- ordered transaction list (each transaction passes `basic_validate`)
+- block hash (hex string; must match the canonical hash of the header preimage)
+
+There is **no** separate producer identity, proposer field, or consensus proof payload in the V1 block structure. Block production in the reference node is **local** (interval-driven sealing from the mempool); that is **not** represented as extra header fields. A **later protocol version** could add such fields; that would **not** be V1/V2 node hardening.
 
 ### Block purpose
 
@@ -137,6 +137,8 @@ In V1, the `fee` is **burned**: it is deducted from the sender together with `am
 
 This keeps V1 minimal (no miner or protocol treasury payout yet). A future protocol version could redirect fees to a block proposer or fee pool instead; that would be an explicit consensus / state rule change.
 
+**Not V2:** redirecting fees or changing fee economics is **out of V2**; it requires a **separately versioned** protocol scope, not node hardening (`docs/v2_scope.md`).
+
 ---
 
 ## Validation model
@@ -158,12 +160,11 @@ Validation must be strict and explicit.
 
 - correct previous hash
 - correct height progression
-- valid timestamp rules
+- valid timestamp rules (including consensus checks against parent / local clock where applicable)
 - valid block structure
 - valid transaction ordering
 - valid transaction set
-- valid block hash
-- valid consensus/producer proof for the chosen V1 mechanism
+- valid block hash (matches canonical preimage)
 
 ### Chain validation should include:
 
@@ -183,6 +184,8 @@ Each sender account must submit transactions with the next expected nonce.
 
 A transaction using an old nonce must be rejected.  
 A transaction skipping ahead past the expected nonce must also be rejected unless future mempool policy explicitly allows waiting transactions.
+
+**Not V2:** **speculative future-nonce mempool behavior** (holding or reordering transactions across nonce gaps) is **not** a V2 deliverable—it can change **which valid transactions** reach blocks compared to a reference V1 node and blurs the local-vs-consensus boundary unless defined in a **new protocol version** (`docs/v2_scope.md`). V2 may still do **drop / revalidate / bound** mempool hygiene that **cannot** cause consensus-invalid inclusion.
 
 This rule ensures that signed transactions cannot simply be replayed repeatedly against the same account state.
 
@@ -213,6 +216,8 @@ The exact V1 consensus approach may remain provisional early on, but it must sat
 
 Consensus complexity must not destabilize the protocol.
 
+**Not V2:** **consensus upgrades** beyond the **linear V1** extension model (fork choice, reorgs, new producer rules, and similar) are **out of V2** unless shipped under a **later protocol version** document (`docs/v2_scope.md`).
+
 ---
 
 ## Networking note
@@ -241,6 +246,12 @@ What matters first is that the logical model is correct:
 - chain data is stored consistently
 - account state can be reconstructed or persisted reliably
 - blocks and transactions can be validated against stored state
+
+---
+
+## Next version (planning)
+
+Reliability, synchronization, persistence, and operational hardening for the **node** (same V1 linear protocol) are scoped in [`v2_scope.md`](v2_scope.md). Persistence and restart semantics are spelled out in [`design_notes/v2_persistence_restart.md`](design_notes/v2_persistence_restart.md). **V2 wire session + linear sync** (handshake, batch caps, catch-up loop) is documented in [`design_notes/v2_wire_peer_sync.md`](design_notes/v2_wire_peer_sync.md). Directional notes here about **fee destination**, **speculative mempool**, and **consensus upgrades** are **not V2** unless adopted under a **future protocol version**. **Storage** notes in this document mean **local persistence** may still evolve in V2 when it does **not** change block/tx validity (`v2_scope.md` classification and protocol freeze).
 
 ---
 
