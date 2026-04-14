@@ -18,6 +18,7 @@ pub mod state;
 pub mod storage;
 pub mod transaction;
 pub mod types;
+pub mod v3;
 pub mod wallet;
 
 #[cfg(test)]
