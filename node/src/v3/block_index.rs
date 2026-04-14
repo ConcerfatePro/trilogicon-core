@@ -190,6 +190,32 @@ impl BlockIndex {
         })
     }
 
+    /// Fail-closed local check: `block` exists in the index.
+    ///
+    /// * **Height 0** (genesis / root): `parent_hash` must be **empty**. This matches the
+    ///   reference node’s genesis shape used in tests and `path_from_tip_toward_genesis` stops.
+    /// * **Height &gt; 0**: parent must exist and satisfy the same rules as
+    ///   [`path_from_tip_toward_genesis`](Self::path_from_tip_toward_genesis) (heights, overflow, no self-parent).
+    ///
+    /// Future reorg **execution** should build plans only from **hardened** index data, then
+    /// validate with `ReorgPlan::validate_against_index` (`v3::reorg_plan`) before replay.
+    pub fn validate_block_ancestry(&self, block: &str) -> Result<(), BlockPathError> {
+        let e = self
+            .get(block)
+            .ok_or_else(|| BlockPathError::UnknownBlock(block.to_string()))?;
+        if e.height == 0 {
+            if !e.parent_hash.is_empty() {
+                return Err(BlockPathError::MalformedAncestry {
+                    block: block.to_string(),
+                    detail: "height-0 block must use empty parent_hash (genesis/root)",
+                });
+            }
+            return Ok(());
+        }
+        self.validated_parent_hash(block, e)?;
+        Ok(())
+    }
+
     fn validated_parent_hash(
         &self,
         block: &str,
@@ -461,5 +487,28 @@ mod tests {
         assert_eq!(f.new_suffix, Vec::<String>::new());
         let p = idx.path_from_tip_toward_genesis("z").unwrap();
         assert_eq!(p, vec!["z", "y", "x", "g"]);
+    }
+
+    #[test]
+    fn validate_block_ancestry_height_zero_requires_empty_parent() {
+        let mut idx = BlockIndex::new();
+        idx.insert(
+            "bad_root".into(),
+            BlockIndexEntry {
+                parent_hash: "x".into(),
+                height: 0,
+            },
+        );
+        assert!(matches!(
+            idx.validate_block_ancestry("bad_root"),
+            Err(BlockPathError::MalformedAncestry { .. })
+        ));
+    }
+
+    #[test]
+    fn validate_block_ancestry_ok_for_genesis_and_child() {
+        let idx = linear_chain();
+        assert_eq!(idx.validate_block_ancestry("g"), Ok(()));
+        assert_eq!(idx.validate_block_ancestry("a2"), Ok(()));
     }
 }
