@@ -190,29 +190,37 @@ impl BlockIndex {
         })
     }
 
-    /// Fail-closed local check: `block` exists in the index.
+    /// Fail-closed check: walk from `block` to the **genesis/root** with the same rules as
+    /// [`path_from_tip_toward_genesis`](Self::path_from_tip_toward_genesis) (bounded steps,
+    /// cycle-safe, height-consistent links). Then require the terminal block to be **height 0**
+    /// with **empty** `parent_hash`.
     ///
-    /// * **Height 0** (genesis / root): `parent_hash` must be **empty**. This matches the
-    ///   reference node’s genesis shape used in tests and `path_from_tip_toward_genesis` stops.
-    /// * **Height &gt; 0**: parent must exist and satisfy the same rules as
-    ///   [`path_from_tip_toward_genesis`](Self::path_from_tip_toward_genesis) (heights, overflow, no self-parent).
+    /// This rejects malformed links **anywhere** above the root, not only on the immediate parent
+    /// of `block`.
     ///
     /// Future reorg **execution** should build plans only from **hardened** index data, then
     /// validate with `ReorgPlan::validate_against_index` (`v3::reorg_plan`) before replay.
     pub fn validate_block_ancestry(&self, block: &str) -> Result<(), BlockPathError> {
-        let e = self
-            .get(block)
+        let path = self.path_from_tip_toward_genesis(block)?;
+        let genesis_hash = path
+            .last()
+            .cloned()
             .ok_or_else(|| BlockPathError::UnknownBlock(block.to_string()))?;
-        if e.height == 0 {
-            if !e.parent_hash.is_empty() {
-                return Err(BlockPathError::MalformedAncestry {
-                    block: block.to_string(),
-                    detail: "height-0 block must use empty parent_hash (genesis/root)",
-                });
-            }
-            return Ok(());
+        let ge = self
+            .get(&genesis_hash)
+            .ok_or_else(|| BlockPathError::UnknownBlock(genesis_hash.clone()))?;
+        if ge.height != 0 {
+            return Err(BlockPathError::MalformedAncestry {
+                block: genesis_hash.clone(),
+                detail: "path ended without reaching height-0 root",
+            });
         }
-        self.validated_parent_hash(block, e)?;
+        if !ge.parent_hash.is_empty() {
+            return Err(BlockPathError::MalformedAncestry {
+                block: genesis_hash.clone(),
+                detail: "height-0 block must use empty parent_hash (genesis/root)",
+            });
+        }
         Ok(())
     }
 
@@ -510,5 +518,30 @@ mod tests {
         let idx = linear_chain();
         assert_eq!(idx.validate_block_ancestry("g"), Ok(()));
         assert_eq!(idx.validate_block_ancestry("a2"), Ok(()));
+    }
+
+    #[test]
+    fn validate_block_ancestry_ok_walks_full_valid_chain() {
+        let idx = linear_chain();
+        assert_eq!(idx.validate_block_ancestry("a1"), Ok(()));
+        assert_eq!(idx.validate_block_ancestry("a2"), Ok(()));
+    }
+
+    #[test]
+    fn validate_block_ancestry_rejects_malformed_ancestor_below_tip() {
+        let mut idx = BlockIndex::new();
+        idx.insert("g".into(), genesis("g"));
+        idx.insert(
+            "mid".into(),
+            BlockIndexEntry {
+                parent_hash: "g".into(),
+                height: 99,
+            },
+        );
+        idx.insert("tip".into(), child("mid", 100));
+        assert!(matches!(
+            idx.validate_block_ancestry("tip"),
+            Err(BlockPathError::MalformedAncestry { .. })
+        ));
     }
 }

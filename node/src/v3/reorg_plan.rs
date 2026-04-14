@@ -31,8 +31,10 @@ pub enum ReorgPlanValidationError {
     BrokenRollbackChain { block: String, detail: &'static str },
     /// `apply_ordered` parent chain does not start at the fork or extend contiguously.
     BrokenApplyChain { block: String, detail: &'static str },
-    /// Same hash appears twice in `rollback_ordered` or `apply_ordered`.
+    /// Same hash appears twice within `rollback_ordered` or twice within `apply_ordered`.
     DuplicateBlock { block: String, side: &'static str },
+    /// Same hash appears in both `rollback_ordered` and `apply_ordered`.
+    DuplicateAcrossSegments { block: String },
     /// `fork_hash` must not appear inside rollback or apply segments.
     ForkInsideSegments { block: String },
 }
@@ -94,6 +96,7 @@ impl ReorgPlan {
 
         ensure_unique_hashes(&self.rollback_ordered, "rollback")?;
         ensure_unique_hashes(&self.apply_ordered, "apply")?;
+        ensure_no_duplicate_across_segments(&self.rollback_ordered, &self.apply_ordered)?;
 
         for h in &self.rollback_ordered {
             if h == &self.fork_hash {
@@ -161,6 +164,18 @@ fn ensure_unique_hashes(
                 block: h.clone(),
                 side,
             });
+        }
+    }
+    Ok(())
+}
+
+fn ensure_no_duplicate_across_segments(
+    rollback_ordered: &[String],
+    apply_ordered: &[String],
+) -> Result<(), ReorgPlanValidationError> {
+    for h in rollback_ordered {
+        if apply_ordered.contains(h) {
+            return Err(ReorgPlanValidationError::DuplicateAcrossSegments { block: h.clone() });
         }
     }
     Ok(())
@@ -471,6 +486,59 @@ mod tests {
         assert!(matches!(
             p.validate_against_index(&idx),
             Err(ReorgPlanValidationError::DuplicateBlock { side, .. }) if side == "rollback"
+        ));
+    }
+
+    #[test]
+    fn validate_duplicate_in_apply_rejected() {
+        let idx = linear_chain();
+        let p = ReorgPlan {
+            fork_hash: "g".into(),
+            rollback_ordered: vec![],
+            apply_ordered: vec!["a1".into(), "a1".into()],
+        };
+        assert!(matches!(
+            p.validate_against_index(&idx),
+            Err(ReorgPlanValidationError::DuplicateBlock { side, .. }) if side == "apply"
+        ));
+    }
+
+    #[test]
+    fn validate_duplicate_across_rollback_and_apply_rejected() {
+        let idx = linear_chain();
+        let p = ReorgPlan {
+            fork_hash: "g".into(),
+            rollback_ordered: vec!["a2".into()],
+            apply_ordered: vec!["a2".into()],
+        };
+        assert!(matches!(
+            p.validate_against_index(&idx),
+            Err(ReorgPlanValidationError::DuplicateAcrossSegments { block }) if block == "a2"
+        ));
+    }
+
+    #[test]
+    fn validate_hidden_malformed_ancestor_rejected_for_apply_segment() {
+        let mut idx = BlockIndex::new();
+        idx.insert("g".into(), genesis());
+        idx.insert(
+            "a1".into(),
+            BlockIndexEntry {
+                parent_hash: "g".into(),
+                height: 99,
+            },
+        );
+        idx.insert("a2".into(), child("a1", 100));
+        let p = ReorgPlan {
+            fork_hash: "g".into(),
+            rollback_ordered: vec![],
+            apply_ordered: vec!["a2".into()],
+        };
+        assert!(matches!(
+            p.validate_against_index(&idx),
+            Err(ReorgPlanValidationError::BlockPath(
+                BlockPathError::MalformedAncestry { .. }
+            ))
         ));
     }
 
