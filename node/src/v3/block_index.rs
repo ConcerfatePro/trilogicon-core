@@ -72,8 +72,11 @@ impl BlockIndex {
 
     /// Walk from `tip_hash` toward genesis following `parent_hash` until missing or height 0.
     ///
-    /// **Soft** helper: does **not** detect cycles or height consistency — prefer
-    /// [`path_from_tip_toward_genesis`](Self::path_from_tip_toward_genesis) for new code.
+    /// **Soft** helper: does **not** detect cycles, missing parents, or height consistency.
+    /// **Do not use for reorg / fork logic** — call [`path_from_tip_toward_genesis`](Self::path_from_tip_toward_genesis) instead.
+    #[deprecated(
+        note = "does not validate ancestry; use path_from_tip_toward_genesis for hardened walks"
+    )]
     pub fn ancestors_to_height_zero(&self, tip_hash: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut cur = tip_hash.to_string();
@@ -208,7 +211,14 @@ impl BlockIndex {
             .ok_or_else(|| BlockPathError::MissingParentLink {
                 block: block.to_string(),
             })?;
-        if pe.height + 1 != e.height {
+        let expected_child_height =
+            pe.height
+                .checked_add(1)
+                .ok_or(BlockPathError::MalformedAncestry {
+                    block: block.to_string(),
+                    detail: "parent.height + 1 overflows u64",
+                })?;
+        if expected_child_height != e.height {
             return Err(BlockPathError::MalformedAncestry {
                 block: block.to_string(),
                 detail: "parent.height + 1 must equal child.height",
@@ -265,7 +275,7 @@ mod tests {
         idx.insert("gen".into(), genesis("gen"));
         idx.insert("b1".into(), child("gen", 1));
         idx.insert("tip".into(), child("b1", 2));
-        let chain = idx.ancestors_to_height_zero("tip");
+        let chain = idx.path_from_tip_toward_genesis("tip").unwrap();
         assert_eq!(chain, vec!["tip", "b1", "gen"]);
     }
 
@@ -388,6 +398,37 @@ mod tests {
         assert_eq!(
             idx.fork_slices_between_tips("t1", "t2"),
             Err(BlockPathError::NoCommonAncestor)
+        );
+    }
+
+    #[test]
+    fn height_overflow_parent_fails() {
+        let mut idx = BlockIndex::new();
+        idx.insert("g".into(), genesis("g"));
+        idx.insert(
+            "pmax".into(),
+            BlockIndexEntry {
+                parent_hash: "g".into(),
+                height: u64::MAX,
+            },
+        );
+        idx.insert(
+            "c".into(),
+            BlockIndexEntry {
+                parent_hash: "pmax".into(),
+                height: 1,
+            },
+        );
+        let r = idx.path_from_tip_toward_genesis("c");
+        assert!(
+            matches!(
+                r,
+                Err(BlockPathError::MalformedAncestry {
+                    detail: "parent.height + 1 overflows u64",
+                    ..
+                })
+            ),
+            "got {r:?}"
         );
     }
 
