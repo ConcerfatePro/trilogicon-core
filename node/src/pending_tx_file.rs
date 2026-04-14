@@ -69,6 +69,29 @@ fn encode_pending_payload(txs: &[Transaction]) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+/// Publish `src` as `dest` (atomic on Unix). Windows often rejects `rename` over an existing
+/// `dest` with "Access is denied" (os error 5); remove `dest` first in that case.
+fn rename_replace_pending_file(src: &Path, dest: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        fs::rename(src, dest)
+    }
+    #[cfg(windows)]
+    {
+        if fs::rename(src, dest).is_ok() {
+            return Ok(());
+        }
+        if dest.exists() {
+            fs::remove_file(dest)?;
+        }
+        fs::rename(src, dest)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        fs::rename(src, dest)
+    }
+}
+
 fn write_pending_atomic(path: &Path, payload: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension("tril.tmp");
     fs::write(&tmp, payload)?;
@@ -76,7 +99,7 @@ fn write_pending_atomic(path: &Path, payload: &[u8]) -> std::io::Result<()> {
         let f = File::open(&tmp)?;
         f.sync_all()?;
     }
-    fs::rename(&tmp, path)?;
+    rename_replace_pending_file(&tmp, path)?;
     #[cfg(unix)]
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
@@ -207,6 +230,27 @@ mod tests {
         let len = u32::try_from(payload.len()).unwrap();
         buf.extend_from_slice(&len.to_be_bytes());
         buf.extend_from_slice(&payload);
+    }
+
+    #[test]
+    fn rename_replace_pending_file_overwrites_existing_destination() {
+        let dir = std::env::temp_dir().join(format!(
+            "trilogicon_rename_rep_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let dest = dir.join("pending_tx.tril");
+        let src = dir.join("pending_tx.tril.tmp");
+        fs::write(&dest, b"old").unwrap();
+        fs::write(&src, b"newpayload").unwrap();
+        rename_replace_pending_file(&src, &dest).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b"newpayload");
+        assert!(!src.exists());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

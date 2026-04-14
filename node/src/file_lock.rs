@@ -35,6 +35,9 @@ impl ExclusiveFileLock {
         match file.try_lock_exclusive() {
             Ok(()) => Ok(Some(Self { file })),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(None),
+            // Windows returns ERROR_LOCK_VIOLATION (33) when the file is already locked exclusively;
+            // map it to the same non-blocking outcome as `WouldBlock` (see `fs2` / `libc` behavior).
+            Err(e) if e.raw_os_error() == Some(33) => Ok(None),
             Err(e) => Err(e),
         }
     }
