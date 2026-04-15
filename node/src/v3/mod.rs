@@ -5,6 +5,7 @@
 //! height-first branch selection (repository `docs/fork_choice.md`)
 //! and block indexing / [`reorg_plan::ReorgPlan`] shapes
 //! (including [`block_index::BlockIndex::fork_slices_between_tips`])
+//! and read-only [`reorg_preflight::ReorgPreflight`] reports
 //! can be reviewed and unit-tested in isolation.
 //!
 //! **Do not** import `crate::network` (or any peer/session types) from
@@ -13,3 +14,4 @@
 pub mod block_index;
 pub mod branch_select;
 pub mod reorg_plan;
+pub mod reorg_preflight;
