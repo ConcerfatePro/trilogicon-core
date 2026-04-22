@@ -253,6 +253,8 @@ Then on the running node process, something like:
 [seal] committed height=1 with 1 transaction(s)
 [peer] session ok (outbound; wire v2; peer advisory height 1 — advisory only, not used for sync bounds)
 ```
+Example:
+<img width="1636" height="491" alt="image" src="https://github.com/user-attachments/assets/bd3e0089-5045-4e4c-b81c-d8cc1229fa09" />
 
 ### 6) Optional: wall-clock drift limit on **inbound** blocks (`--max-future-drift-secs`)
 
