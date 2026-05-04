@@ -14,6 +14,6 @@
 
 pub mod block_index;
 pub mod branch_select;
-pub mod replay_sandbox;
 pub mod reorg_plan;
 pub mod reorg_preflight;
+pub mod replay_sandbox;

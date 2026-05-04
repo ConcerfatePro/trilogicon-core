@@ -1,5 +1,0 @@
-# Trilogicon peer book — known peers and connection health (v2).
-# Edit with care; invalid addresses are skipped at runtime.
-
-version = 1
-peers = []

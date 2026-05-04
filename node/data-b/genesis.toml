@@ -1,6 +1,0 @@
-# Trilogicon V1 genesis — allocations at height 0 (before first non-genesis block).
-# State commitment (compare across nodes): 537c575a7fc58259f839e371349df505e5abb3902234cdb3b1d3bfd7f6fd7dc8
-
-[[allocations]]
-address = "db1712400e1ce5130c62022f0977776aca0bd580a95aeebdb2e4aec7b7c9e557"
-balance = 10000000

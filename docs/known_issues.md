@@ -27,6 +27,10 @@ This file tracks **current** limitations of the reference node and protocol **as
 
 The branch name **`release/v1.0.0-rc1`** referred to a **V1-era release candidate** that also carried early V2 hardening work merged to `main`. It is **not** the definition of “current stage”; use the checkpoint docs above.
 
+## Repository hygiene (wallet seeds and local `data-*` dirs)
+
+Never commit **`wallet.seed`**, **`chain.blocks`**, or other runtime files from a node data directory. If those files ever reached a **public** remote, treat the material as **compromised** and use fresh keys and directories for anything serious. See [`operator_hygiene.md`](operator_hygiene.md) for conventions; the root `.gitignore` lists patterns to reduce accidental re-adds.
+
 ## Contributing fixes vs features
 
 - **Correctness, clarity, docs, tests** aligned with frozen scope are always in scope.

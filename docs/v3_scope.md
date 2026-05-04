@@ -92,6 +92,31 @@ A **future protocol version** could define a **normative** depth for **inter-nod
 
 ---
 
+## V3-08 integration readiness gate
+
+V3 **must not** wire fork-choice, reorg execution, or replay simulation into the live commit path until **all** of the following are satisfied. Until then, `node/src/v3/` remains **inert scaffolding** reviewed against these criteria.
+
+1. **Deterministic block index:** a `BlockIndex`-shaped structure (see `node/src/v3/block_index.rs`) can be rebuilt deterministically from stored canonical chain data (and, when specified, retained side-branch metadata), with tests proving round-trips and failure modes.
+2. **Branch selection coverage:** unit tests cover higher height, equal height (tie-break), invalid branch, missing parent, and malformed index inputs for height-first selection ([`fork_choice.md`](fork_choice.md)).
+3. **Reorg plan validation:** `ReorgPlan::validate_against_index` in `node/src/v3/reorg_plan.rs` (or its successor) passes on valid rollback/apply suffixes and rejects broken chains, duplicates, and fork placement errors.
+4. **Preflight before replay:** `ReorgPreflight` in `node/src/v3/reorg_preflight.rs` rejects structurally valid but locally unsafe plans (for example exceeding `MAX_REORG_DEPTH`-style policy) before any state simulation.
+5. **Replay sandbox:** `ReplaySandbox` in `node/src/v3/replay_sandbox.rs` successfully simulates candidate branch application on **cloned** ledger state using canonical validation gates (index linkage, parent-relative timestamps, basic block checks, state transitions), with typed error reporting.
+6. **Typed simulation errors:** timestamp policy, basic validation, index linkage, and state transition failures are represented as structured sandbox errors (not only opaque strings), suitable for operator logs and tests.
+7. **Storage for side branches:** [`reorg_model.md`](reorg_model.md) (or a follow-on note) specifies how non-canonical blocks are retained, bounded, and evicted on disk.
+8. **Mempool after reorg:** [`reorg_model.md`](reorg_model.md) §7–8 behavior is specified and test-backed for transactions invalidated or resurrected by reorg.
+9. **Operator / integrator language:** [`finality.md`](finality.md) and README-adjacent docs stay aligned with honest confirmation depth language (no false finality claims).
+10. **No silent live integration:** `append_block`, network ingest, storage migration, and CLI must not call V3 integration entrypoints until the checklist above is explicitly signed off.
+
+### Explicit non-goals for V3-08
+
+- No validator economy, staking rewards, or delegated consensus layer.
+- No smart contracts, DeFi, bridges, NFTs, or app-chain features.
+- No production-grade “finality” or partition-safety claims beyond documented integrator expectations.
+- No automatic storage migration or wire-format change unless separately scoped, reviewed, and versioned.
+- No network gossip or wire-protocol change for reorgs until a dedicated protocol revision says otherwise.
+
+---
+
 ## Relationship to other documents
 
 | Document | Role |

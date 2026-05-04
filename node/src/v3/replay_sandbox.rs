@@ -1,9 +1,18 @@
-//! **Inert** read-only **replay sandbox** report — preparatory V3 scaffolding only (V3-07).
+//! **Inert** read-only **replay sandbox** report — preparatory V3 scaffolding only (V3-07 / V3-07b).
 //!
 //! Pure, library-local simulation: validates a [`ReorgPlan`](super::reorg_plan::ReorgPlan) against a
 //! [`BlockIndex`](super::block_index::BlockIndex), applies **local preflight policy** via
 //! [`ReorgPreflight`](super::reorg_preflight::ReorgPreflight), then **optionally** replays the plan on
 //! **cloned** [`State`](crate::state::State) using caller-supplied [`Block`](crate::block::Block) bodies.
+//!
+//! **V3-07b:** replay uses the same **parent-relative timestamp** gate as the live validator:
+//! [`crate::consensus::validate_block_timestamps_vs_parent`] with explicit parent headers from
+//! [`ReplaySandboxMaterial::parent_blocks_by_hash`] (and bodies in [`ReplaySandboxMaterial::blocks_by_hash`]).
+//! Ledger fingerprints use a **canonical length-prefixed** account preimage (sorted keys, fixed-width
+//! fields) so two different ledgers cannot collide via delimiter ambiguity.
+//!
+//! **Not integrated:** this module does **not** read the canonical tip, call [`crate::blockchain::Blockchain`],
+//! `append_block`, network ingest, storage, or CLI. Reports describe simulation only.
 //!
 //! **Guarantees:** no canonical [`Blockchain`](crate::blockchain::Blockchain) mutation, no
 //! `append_block` / network / sync / storage / CLI wiring, no persistence, no automatic reorg
@@ -20,7 +29,9 @@
 use std::collections::HashMap;
 
 use crate::block::Block;
+use crate::consensus::{ConsensusParams, validate_block_timestamps_vs_parent};
 use crate::crypto::Crypto;
+use crate::errors::ProtocolError;
 use crate::state::State;
 
 use super::block_index::BlockIndex;
@@ -43,18 +54,65 @@ pub struct ReplaySandboxMaterial {
     /// When `plan.rollback_ordered` is non-empty, must be `Some` so the sandbox can verify the old
     /// branch forward-replays from [`Self::state_at_fork`] to the committed old tip.
     pub expected_state_at_old_tip: Option<State>,
+    /// Same parent-relative timestamp rules as canonical validation ([`validate_block_timestamps_vs_parent`]).
+    pub consensus: ConsensusParams,
+    /// Parent [`Block`] headers keyed by **`parent.block_hash`** (i.e. a child’s `previous_hash`).
+    ///
+    /// For each replayed block, the parent must be found here **or** in [`Self::blocks_by_hash`].
+    /// Fail-closed if missing (timestamps cannot be checked).
+    pub parent_blocks_by_hash: HashMap<String, Block>,
 }
 
-/// Deterministic digest of account rows (`address|balance|nonce`, sorted by address).
+/// Canonical, delimiter-safe preimage for [`sandbox_state_fingerprint`].
 ///
-/// **Inert scaffolding:** stable enough for tests and operator reports; not a consensus commitment.
+/// Encoding: `u64_be(account_count)` then for each account in **sorted** `Address` string order:
+/// `u32_be(addr_len) || addr_utf8 || u64_be(balance) || u64_be(nonce)`.
+pub fn sandbox_state_fingerprint_preimage(state: &State) -> Vec<u8> {
+    let accounts: Vec<_> = state.accounts_sorted().collect();
+    let mut out = Vec::new();
+    let n = u64::try_from(accounts.len()).unwrap_or(u64::MAX);
+    out.extend_from_slice(&n.to_be_bytes());
+    for (addr, ac) in accounts {
+        let addr_bytes = addr.0.as_bytes();
+        // V1 protocol bounds addresses to a small maximum length; cast is safe for fingerprinting.
+        let len_u32 = addr_bytes.len() as u32;
+        out.extend_from_slice(&len_u32.to_be_bytes());
+        out.extend_from_slice(addr_bytes);
+        out.extend_from_slice(&ac.balance.to_be_bytes());
+        out.extend_from_slice(&ac.nonce.to_be_bytes());
+    }
+    out
+}
+
+/// Deterministic digest of ledger accounts (see [`sandbox_state_fingerprint_preimage`]).
+///
+/// **Inert scaffolding:** stable for tests and operator reports; not a consensus commitment.
 pub fn sandbox_state_fingerprint(state: &State) -> String {
-    let lines: Vec<String> = state
-        .accounts_sorted()
-        .into_iter()
-        .map(|(a, ac)| format!("{}|{}|{}", a.0, ac.balance, ac.nonce))
-        .collect();
-    Crypto::hash_bytes(lines.join("\n").as_bytes())
+    Crypto::hash_bytes(&sandbox_state_fingerprint_preimage(state))
+}
+
+/// Mismatch between a replayed [`Block`] body and its [`BlockIndex`] row (same `block_hash` key).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexLinkMismatch {
+    /// `block.block_hash` does not match the `blocks_by_hash` key / plan hash.
+    BlockHashKey {
+        map_key: String,
+        block_declared_hash: String,
+    },
+    /// Hash missing from the index (unexpected after structural validation).
+    MissingIndexEntry { block_hash: String },
+    /// `block.height` disagrees with index height.
+    Height {
+        block_hash: String,
+        index_height: u64,
+        block_height: u64,
+    },
+    /// `block.previous_hash` disagrees with index `parent_hash`.
+    ParentHash {
+        block_hash: String,
+        index_parent_hash: String,
+        block_previous_hash: String,
+    },
 }
 
 /// Replay-time failures after structural + preflight gates passed.
@@ -64,28 +122,32 @@ pub enum ReplaySandboxReplayError {
     MissingExpectedOldTipState,
     /// No [`Block`] provided for a hash referenced by the plan.
     MissingBlockBody { block_hash: String },
-    /// [`Block`] header fields disagree with [`BlockIndex`] for the same hash.
-    BlockHeaderMismatch {
-        block_hash: String,
-        detail: &'static str,
-    },
+    /// [`Block`] header linkage disagrees with [`BlockIndex`] for the keyed hash.
+    IndexLinkMismatch(IndexLinkMismatch),
     /// Forward walk along the old branch reached a different ledger than the caller expected.
     OldTipStateMismatch {
         expected_fingerprint: String,
         replayed_fingerprint: String,
     },
-    /// `basic_validate` failed for a replayed block body.
-    InvalidBlockBody {
+    /// [`Block::basic_validate`] failed for a replayed block body.
+    BasicValidation {
         block_hash: String,
-        error: String,
+        error: ProtocolError,
     },
     /// `apply_transaction` failed while simulating a block.
     StateTransition {
         block_hash: String,
-        error: String,
+        error: ProtocolError,
     },
     /// [`State::total_balance_sum`] failed on the final cloned state (supply audit).
-    SupplyAudit(String),
+    SupplyAudit { error: ProtocolError },
+    /// Parent header required for timestamp checks was not in `parent_blocks_by_hash` or `blocks_by_hash`.
+    MissingParentBlock { parent_hash: String },
+    /// Child timestamp violates [`validate_block_timestamps_vs_parent`] under [`ReplaySandboxMaterial::consensus`].
+    TimestampPolicy {
+        block_hash: String,
+        error: ProtocolError,
+    },
 }
 
 /// Successful sandbox replay summary (all values derived from cloned state only).
@@ -135,7 +197,9 @@ impl ReplaySandbox {
 
         let replay = match (&structural, preflight.verdict) {
             (Err(_), _) => ReplaySandboxReplayPhase::SkippedDueToStructuralInvalid,
-            (Ok(_), ReorgPreflightVerdict::Rejected) => ReplaySandboxReplayPhase::SkippedDueToPolicy,
+            (Ok(_), ReorgPreflightVerdict::Rejected) => {
+                ReplaySandboxReplayPhase::SkippedDueToPolicy
+            }
             (Ok(_), ReorgPreflightVerdict::NoOp | ReorgPreflightVerdict::Acceptable) => {
                 ReplaySandboxReplayPhase::Completed(run_replay_on_clones(plan, index, material))
             }
@@ -177,8 +241,7 @@ fn run_replay_on_clones(
         let mut walk = material.state_at_fork.clone();
         for h in plan.rollback_ordered.iter().rev() {
             let block = material.blocks_by_hash.get(h).expect("checked contains");
-            validate_block_against_index(block, index, h)?;
-            apply_block_to_state(&mut walk, block, h)?;
+            apply_block_to_state(material, index, &mut walk, block, h)?;
         }
         let replayed_fp = sandbox_state_fingerprint(&walk);
         let expected = material
@@ -197,14 +260,13 @@ fn run_replay_on_clones(
     let mut sandbox = material.state_at_fork.clone();
     for h in &plan.apply_ordered {
         let block = material.blocks_by_hash.get(h).expect("checked contains");
-        validate_block_against_index(block, index, h)?;
-        apply_block_to_state(&mut sandbox, block, h)?;
+        apply_block_to_state(material, index, &mut sandbox, block, h)?;
     }
 
     let final_state_fingerprint = sandbox_state_fingerprint(&sandbox);
-    let final_supply_total = sandbox
-        .total_balance_sum()
-        .map_err(|e| ReplaySandboxReplayError::SupplyAudit(e.to_string()))?;
+    let final_supply_total = sandbox.total_balance_sum().map_err(|e| {
+        ReplaySandboxReplayError::SupplyAudit { error: e }
+    })?;
 
     Ok(ReplaySandboxReplayOk {
         rollback_blocks_verified: plan.rollback_ordered.len(),
@@ -220,47 +282,84 @@ fn validate_block_against_index(
     expected_hash: &str,
 ) -> Result<(), ReplaySandboxReplayError> {
     if block.block_hash != expected_hash {
-        return Err(ReplaySandboxReplayError::BlockHeaderMismatch {
-            block_hash: expected_hash.to_string(),
-            detail: "block.block_hash must equal map/plan hash",
-        });
+        return Err(ReplaySandboxReplayError::IndexLinkMismatch(
+            IndexLinkMismatch::BlockHashKey {
+                map_key: expected_hash.to_string(),
+                block_declared_hash: block.block_hash.clone(),
+            },
+        ));
     }
     let entry = index.get(expected_hash).ok_or_else(|| {
-        ReplaySandboxReplayError::BlockHeaderMismatch {
+        ReplaySandboxReplayError::IndexLinkMismatch(IndexLinkMismatch::MissingIndexEntry {
             block_hash: expected_hash.to_string(),
-            detail: "block hash missing from index (structural validation should prevent this)",
-        }
+        })
     })?;
     if block.height != entry.height {
-        return Err(ReplaySandboxReplayError::BlockHeaderMismatch {
+        return Err(ReplaySandboxReplayError::IndexLinkMismatch(IndexLinkMismatch::Height {
             block_hash: expected_hash.to_string(),
-            detail: "block.height must equal index height",
-        });
+            index_height: entry.height,
+            block_height: block.height,
+        }));
     }
     if block.previous_hash != entry.parent_hash {
-        return Err(ReplaySandboxReplayError::BlockHeaderMismatch {
-            block_hash: expected_hash.to_string(),
-            detail: "block.previous_hash must equal index parent_hash",
-        });
+        return Err(ReplaySandboxReplayError::IndexLinkMismatch(
+            IndexLinkMismatch::ParentHash {
+                block_hash: expected_hash.to_string(),
+                index_parent_hash: entry.parent_hash.clone(),
+                block_previous_hash: block.previous_hash.clone(),
+            },
+        ));
     }
     Ok(())
 }
 
+fn resolve_parent_block<'a>(
+    material: &'a ReplaySandboxMaterial,
+    parent_key: &str,
+) -> Result<&'a Block, ReplaySandboxReplayError> {
+    material
+        .parent_blocks_by_hash
+        .get(parent_key)
+        .or_else(|| material.blocks_by_hash.get(parent_key))
+        .ok_or_else(|| ReplaySandboxReplayError::MissingParentBlock {
+            parent_hash: parent_key.to_string(),
+        })
+}
+
+fn validate_timestamp_vs_parent(
+    material: &ReplaySandboxMaterial,
+    child: &Block,
+    child_hash: &str,
+) -> Result<(), ReplaySandboxReplayError> {
+    if child.is_genesis() {
+        return Ok(());
+    }
+    let parent = resolve_parent_block(material, &child.previous_hash)?;
+    validate_block_timestamps_vs_parent(parent, child, &material.consensus).map_err(|e| {
+        ReplaySandboxReplayError::TimestampPolicy {
+            block_hash: child_hash.to_string(),
+            error: e,
+        }
+    })
+}
+
 fn apply_block_to_state(
+    material: &ReplaySandboxMaterial,
+    index: &BlockIndex,
     state: &mut State,
     block: &Block,
     block_hash: &str,
 ) -> Result<(), ReplaySandboxReplayError> {
-    block.basic_validate().map_err(|e| ReplaySandboxReplayError::InvalidBlockBody {
+    validate_block_against_index(block, index, block_hash)?;
+    validate_timestamp_vs_parent(material, block, block_hash)?;
+    block.basic_validate().map_err(|e| ReplaySandboxReplayError::BasicValidation {
         block_hash: block_hash.to_string(),
-        error: e.to_string(),
+        error: e,
     })?;
     for tx in &block.transactions {
-        state.apply_transaction(tx).map_err(|e| {
-            ReplaySandboxReplayError::StateTransition {
-                block_hash: block_hash.to_string(),
-                error: e.to_string(),
-            }
+        state.apply_transaction(tx).map_err(|e| ReplaySandboxReplayError::StateTransition {
+            block_hash: block_hash.to_string(),
+            error: e,
         })?;
     }
     Ok(())
@@ -276,10 +375,12 @@ mod tests {
     use super::super::reorg_plan::ReorgPlan;
     use super::super::reorg_preflight::{ReorgPreflightPolicy, ReorgPreflightVerdict};
     use super::{
-        sandbox_state_fingerprint, ReplaySandbox, ReplaySandboxMaterial, ReplaySandboxReplayError,
-        ReplaySandboxReplayPhase,
+        IndexLinkMismatch, ReplaySandbox, ReplaySandboxMaterial, ReplaySandboxReplayError,
+        ReplaySandboxReplayPhase, sandbox_state_fingerprint, sandbox_state_fingerprint_preimage,
     };
     use crate::block::Block;
+    use crate::consensus::ConsensusParams;
+    use crate::errors::ProtocolError;
     use crate::crypto::Crypto;
     use crate::genesis::Genesis;
     use crate::state::State;
@@ -352,6 +453,19 @@ mod tests {
         block
     }
 
+    fn default_consensus() -> ConsensusParams {
+        ConsensusParams::default()
+    }
+
+    fn parent_headers_for(genesis: &Block, chain: &[Block]) -> HashMap<String, Block> {
+        let mut m = HashMap::new();
+        m.insert(genesis.block_hash.clone(), genesis.clone());
+        for b in chain {
+            m.insert(b.block_hash.clone(), b.clone());
+        }
+        m
+    }
+
     fn fund_state_at_genesis(signing_key: &SigningKey, balance: u64) -> State {
         let verifying_key = signing_key.verifying_key();
         let sender = Address::new(Crypto::address_from_public_key(&verifying_key.to_bytes()));
@@ -364,36 +478,16 @@ mod tests {
         let genesis = Block::genesis();
         let ghash = genesis.block_hash.clone();
 
-        let tx0 = make_signed_tx(
-            signing_key,
-            Address::new("recv_b1"),
-            1,
-            0,
-            0,
-            1_700_000_200,
-        );
+        let tx0 = make_signed_tx(signing_key, Address::new("recv_b1"), 1, 0, 0, 1_700_000_200);
         let b1 = block_with_txs(1, &ghash, 1_700_000_201, vec![tx0]);
 
-        let tx1 = make_signed_tx(
-            signing_key,
-            Address::new("recv_b2"),
-            2,
-            0,
-            1,
-            1_700_000_202,
-        );
+        let tx1 = make_signed_tx(signing_key, Address::new("recv_b2"), 2, 0, 1, 1_700_000_202);
         let b2 = block_with_txs(2, &b1.block_hash, 1_700_000_203, vec![tx1]);
 
         let mut index = BlockIndex::new();
         index.insert(ghash.clone(), genesis_index_entry());
-        index.insert(
-            b1.block_hash.clone(),
-            child_entry(&ghash, 1),
-        );
-        index.insert(
-            b2.block_hash.clone(),
-            child_entry(&b1.block_hash, 2),
-        );
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(b2.block_hash.clone(), child_entry(&b1.block_hash, 2));
 
         (index, b1, b2)
     }
@@ -425,6 +519,8 @@ mod tests {
             state_at_fork: at_tip.clone(),
             blocks_by_hash: HashMap::new(),
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: HashMap::new(),
         };
 
         let a = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
@@ -436,7 +532,10 @@ mod tests {
             ReplaySandboxReplayPhase::Completed(Ok(ok)) => {
                 assert_eq!(ok.rollback_blocks_verified, 0);
                 assert_eq!(ok.apply_blocks_simulated, 0);
-                assert_eq!(ok.final_state_fingerprint, sandbox_state_fingerprint(&at_tip));
+                assert_eq!(
+                    ok.final_state_fingerprint,
+                    sandbox_state_fingerprint(&at_tip)
+                );
             }
             other => panic!("unexpected replay: {other:?}"),
         }
@@ -463,10 +562,13 @@ mod tests {
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork.clone(),
             blocks_by_hash: blocks,
             expected_state_at_old_tip: Some(at_tip.clone()),
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
@@ -475,7 +577,10 @@ mod tests {
             ReplaySandboxReplayPhase::Completed(Ok(ok)) => {
                 assert_eq!(ok.rollback_blocks_verified, 1);
                 assert_eq!(ok.apply_blocks_simulated, 0);
-                assert_eq!(ok.final_state_fingerprint, sandbox_state_fingerprint(&at_fork));
+                assert_eq!(
+                    ok.final_state_fingerprint,
+                    sandbox_state_fingerprint(&at_fork)
+                );
             }
             other => panic!("unexpected replay: {other:?}"),
         }
@@ -498,10 +603,13 @@ mod tests {
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork.clone(),
             blocks_by_hash: blocks,
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
         let mut expected_final = at_fork.clone();
@@ -541,7 +649,7 @@ mod tests {
             0,
             1_700_000_300,
         );
-        let blk_o3 = block_with_txs(3, &b2.block_hash, 1_700_000_301, vec![tx_o3]);
+        let blk_o3 = block_with_txs(3, &b2.block_hash, 1_700_000_502, vec![tx_o3]);
         let tx_o4 = make_signed_tx(
             &signing_key,
             Address::new("recv_o4"),
@@ -550,7 +658,7 @@ mod tests {
             1,
             1_700_000_302,
         );
-        let blk_o4 = block_with_txs(4, &blk_o3.block_hash, 1_700_000_303, vec![tx_o4]);
+        let blk_o4 = block_with_txs(4, &blk_o3.block_hash, 1_700_000_503, vec![tx_o4]);
 
         let tx_n3 = make_signed_tx(
             &signing_key,
@@ -560,7 +668,7 @@ mod tests {
             0,
             1_700_000_310,
         );
-        let blk_n3 = block_with_txs(3, &b2.block_hash, 1_700_000_311, vec![tx_n3]);
+        let blk_n3 = block_with_txs(3, &b2.block_hash, 1_700_000_510, vec![tx_n3]);
         let tx_n4 = make_signed_tx(
             &signing_key,
             Address::new("recv_n4"),
@@ -569,7 +677,7 @@ mod tests {
             1,
             1_700_000_312,
         );
-        let blk_n4 = block_with_txs(4, &blk_n3.block_hash, 1_700_000_313, vec![tx_n4]);
+        let blk_n4 = block_with_txs(4, &blk_n3.block_hash, 1_700_000_511, vec![tx_n4]);
         let tx_n5 = make_signed_tx(
             &signing_key,
             Address::new("recv_n5"),
@@ -578,24 +686,18 @@ mod tests {
             2,
             1_700_000_314,
         );
-        let blk_n5 = block_with_txs(5, &blk_n4.block_hash, 1_700_000_315, vec![tx_n5]);
+        let blk_n5 = block_with_txs(5, &blk_n4.block_hash, 1_700_000_512, vec![tx_n5]);
 
         let mut index = BlockIndex::new();
         index.insert(ghash.clone(), genesis_index_entry());
         index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
         index.insert(b2.block_hash.clone(), child_entry(&b1.block_hash, 2));
-        index.insert(
-            blk_o3.block_hash.clone(),
-            child_entry(&b2.block_hash, 3),
-        );
+        index.insert(blk_o3.block_hash.clone(), child_entry(&b2.block_hash, 3));
         index.insert(
             blk_o4.block_hash.clone(),
             child_entry(&blk_o3.block_hash, 4),
         );
-        index.insert(
-            blk_n3.block_hash.clone(),
-            child_entry(&b2.block_hash, 3),
-        );
+        index.insert(blk_n3.block_hash.clone(), child_entry(&b2.block_hash, 3));
         index.insert(
             blk_n4.block_hash.clone(),
             child_entry(&blk_n3.block_hash, 4),
@@ -605,17 +707,21 @@ mod tests {
             child_entry(&blk_n4.block_hash, 5),
         );
 
-        let plan = ReorgPlan::try_from_tips(&index, &blk_o4.block_hash, &blk_n5.block_hash).unwrap();
+        let plan =
+            ReorgPlan::try_from_tips(&index, &blk_o4.block_hash, &blk_n5.block_hash).unwrap();
         assert_eq!(plan.fork_hash, b2.block_hash);
-        assert_eq!(plan.rollback_ordered, vec![
-            blk_o4.block_hash.clone(),
-            blk_o3.block_hash.clone()
-        ]);
-        assert_eq!(plan.apply_ordered, vec![
-            blk_n3.block_hash.clone(),
-            blk_n4.block_hash.clone(),
-            blk_n5.block_hash.clone()
-        ]);
+        assert_eq!(
+            plan.rollback_ordered,
+            vec![blk_o4.block_hash.clone(), blk_o3.block_hash.clone()]
+        );
+        assert_eq!(
+            plan.apply_ordered,
+            vec![
+                blk_n3.block_hash.clone(),
+                blk_n4.block_hash.clone(),
+                blk_n5.block_hash.clone()
+            ]
+        );
 
         let mut base = State::from_genesis(&Genesis::empty()).unwrap();
         base.create_account(sender.clone(), 1_000);
@@ -644,6 +750,19 @@ mod tests {
             state_at_fork: at_fork.clone(),
             blocks_by_hash: blocks,
             expected_state_at_old_tip: Some(at_old_tip.clone()),
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(
+                &genesis,
+                &[
+                    b1.clone(),
+                    b2.clone(),
+                    blk_o3.clone(),
+                    blk_o4.clone(),
+                    blk_n3.clone(),
+                    blk_n4.clone(),
+                    blk_n5.clone(),
+                ],
+            ),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
@@ -691,10 +810,7 @@ mod tests {
         let mut index = BlockIndex::new();
         index.insert(ghash.clone(), genesis_index_entry());
         index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
-        index.insert(
-            b2_bad.block_hash.clone(),
-            child_entry(&b1.block_hash, 2),
-        );
+        index.insert(b2_bad.block_hash.clone(), child_entry(&b1.block_hash, 2));
 
         let plan = ReorgPlan::try_from_tips(&index, &b1.block_hash, &b2_bad.block_hash).unwrap();
 
@@ -709,13 +825,15 @@ mod tests {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis, &[b1.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
         match &r.replay {
-            ReplaySandboxReplayPhase::Completed(Err(e)) => {
-                assert!(matches!(e, ReplaySandboxReplayError::InvalidBlockBody { .. }));
-            }
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::BasicValidation { .. },
+            )) => {}
             other => panic!("unexpected replay: {other:?}"),
         }
     }
@@ -736,20 +854,23 @@ mod tests {
         apply_block_to_state_for_test(&mut at_fork, &b1);
 
         let mut blocks = HashMap::new();
-        blocks.insert(b1.block_hash.clone(), b1);
+        blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2_hash.clone(), b2_wrong_height);
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
         match &r.replay {
-            ReplaySandboxReplayPhase::Completed(Err(e)) => {
-                assert!(matches!(e, ReplaySandboxReplayError::BlockHeaderMismatch { .. }));
-            }
+            ReplaySandboxReplayPhase::Completed(Err(ReplaySandboxReplayError::IndexLinkMismatch(
+                IndexLinkMismatch::BlockHashKey { .. },
+            ))) => {}
             other => panic!("unexpected replay: {other:?}"),
         }
     }
@@ -772,15 +893,16 @@ mod tests {
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: Some(at_tip),
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
-        let policy = ReorgPreflightPolicy {
-            max_reorg_depth: 0,
-        };
+        let policy = ReorgPreflightPolicy { max_reorg_depth: 0 };
         let r = ReplaySandbox::run_report(&plan, &index, &policy, &material);
         assert_eq!(r.preflight.verdict, ReorgPreflightVerdict::Rejected);
         assert_eq!(r.replay, ReplaySandboxReplayPhase::SkippedDueToPolicy);
@@ -798,17 +920,19 @@ mod tests {
         apply_block_to_state_for_test(&mut at_fork, &b1);
         let mut wrong_expected = at_fork.clone();
         apply_block_to_state_for_test(&mut wrong_expected, &b2);
-        wrong_expected
-            .create_account(Address::new("extra_account_that_changes_fingerprint"), 1);
+        wrong_expected.create_account(Address::new("extra_account_that_changes_fingerprint"), 1);
 
         let mut blocks = HashMap::new();
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: Some(wrong_expected),
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
@@ -834,10 +958,13 @@ mod tests {
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
@@ -866,15 +993,310 @@ mod tests {
         blocks.insert(b1.block_hash.clone(), b1.clone());
         blocks.insert(b2.block_hash.clone(), b2.clone());
 
+        let genesis_blk = Block::genesis();
         let material = ReplaySandboxMaterial {
             state_at_fork: at_fork,
             blocks_by_hash: blocks,
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis_blk, &[b1.clone(), b2.clone()]),
         };
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
         assert!(r.structural.is_err());
-        assert_eq!(r.replay, ReplaySandboxReplayPhase::SkippedDueToStructuralInvalid);
+        assert_eq!(
+            r.replay,
+            ReplaySandboxReplayPhase::SkippedDueToStructuralInvalid
+        );
+    }
+
+    #[test]
+    fn fingerprint_distinguishes_delimiter_collision_addresses() {
+        let mut with_pipe = State::from_genesis(&Genesis::empty()).unwrap();
+        with_pipe.create_account(Address::new("x|1"), 0);
+        let mut plain_x = State::from_genesis(&Genesis::empty()).unwrap();
+        plain_x.create_account(Address::new("x"), 1);
+
+        let naive_left = format!("x|1|0|0");
+        let naive_right = format!("x|1|0|0");
+        assert_eq!(
+            naive_left, naive_right,
+            "naive delimiter row encoding collides for these two ledgers"
+        );
+
+        let pre_left = sandbox_state_fingerprint_preimage(&with_pipe);
+        let pre_right = sandbox_state_fingerprint_preimage(&plain_x);
+        assert_ne!(pre_left, pre_right);
+        assert_ne!(
+            sandbox_state_fingerprint(&with_pipe),
+            sandbox_state_fingerprint(&plain_x)
+        );
+    }
+
+    #[test]
+    fn fingerprint_stable_across_account_insertion_order() {
+        let mut a_first = State::from_genesis(&Genesis::empty()).unwrap();
+        a_first.create_account(Address::new("aaa"), 10);
+        a_first.create_account(Address::new("zzz"), 20);
+
+        let mut z_first = State::from_genesis(&Genesis::empty()).unwrap();
+        z_first.create_account(Address::new("zzz"), 20);
+        z_first.create_account(Address::new("aaa"), 10);
+
+        assert_eq!(
+            sandbox_state_fingerprint_preimage(&a_first),
+            sandbox_state_fingerprint_preimage(&z_first)
+        );
+        assert_eq!(
+            sandbox_state_fingerprint(&a_first),
+            sandbox_state_fingerprint(&z_first)
+        );
+    }
+
+    #[test]
+    fn replay_rejects_missing_parent_block_for_timestamp_check() {
+        let signing_key = SigningKey::from_bytes(&[43u8; 32]);
+        let genesis = Block::genesis();
+        let ghash = genesis.block_hash.clone();
+
+        let tx0 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_miss_p0"),
+            1,
+            0,
+            0,
+            1_700_000_600,
+        );
+        let b1 = block_with_txs(1, &ghash, 1_700_000_601, vec![tx0]);
+        let tx1 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_miss_p1"),
+            1,
+            0,
+            1,
+            1_700_000_602,
+        );
+        let b2 = block_with_txs(2, &b1.block_hash, 1_700_000_603, vec![tx1]);
+
+        let mut index = BlockIndex::new();
+        index.insert(ghash.clone(), genesis_index_entry());
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(b2.block_hash.clone(), child_entry(&b1.block_hash, 2));
+
+        let plan = ReorgPlan::try_from_tips(&index, &b1.block_hash, &b2.block_hash).unwrap();
+
+        let mut at_fork = fund_state_at_genesis(&signing_key, 100);
+        apply_block_to_state_for_test(&mut at_fork, &b1);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(b2.block_hash.clone(), b2.clone());
+
+        let material = ReplaySandboxMaterial {
+            state_at_fork: at_fork,
+            blocks_by_hash: blocks,
+            expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis, &[]),
+        };
+
+        let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
+        match &r.replay {
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::MissingParentBlock { parent_hash },
+            )) => assert_eq!(parent_hash, &b1.block_hash),
+            other => panic!("unexpected replay: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_rejects_timestamp_regression_on_apply() {
+        let signing_key = SigningKey::from_bytes(&[40u8; 32]);
+        let genesis = Block::genesis();
+        let ghash = genesis.block_hash.clone();
+
+        let tx0 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_ts_apply"),
+            1,
+            0,
+            0,
+            1_700_000_001,
+        );
+        let b1 = block_with_txs(1, &ghash, 1_000, vec![tx0]);
+        let tx1 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_ts_apply2"),
+            1,
+            0,
+            1,
+            1_700_000_002,
+        );
+        let b2_too_soon = block_with_txs(2, &b1.block_hash, 1_050, vec![tx1]);
+
+        let mut index = BlockIndex::new();
+        index.insert(ghash.clone(), genesis_index_entry());
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(
+            b2_too_soon.block_hash.clone(),
+            child_entry(&b1.block_hash, 2),
+        );
+
+        let plan =
+            ReorgPlan::try_from_tips(&index, &b1.block_hash, &b2_too_soon.block_hash).unwrap();
+
+        let mut at_fork = fund_state_at_genesis(&signing_key, 100);
+        apply_block_to_state_for_test(&mut at_fork, &b1);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(b1.block_hash.clone(), b1.clone());
+        blocks.insert(b2_too_soon.block_hash.clone(), b2_too_soon.clone());
+
+        let material = ReplaySandboxMaterial {
+            state_at_fork: at_fork,
+            blocks_by_hash: blocks,
+            expected_state_at_old_tip: None,
+            consensus: ConsensusParams {
+                min_block_interval_secs: 100,
+                max_future_drift_secs: u64::MAX,
+            },
+            parent_blocks_by_hash: parent_headers_for(&genesis, &[b1.clone()]),
+        };
+
+        let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
+        match &r.replay {
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::TimestampPolicy { error, .. },
+            )) => {
+                assert!(matches!(error, &ProtocolError::InvalidBlock(_)));
+            }
+            other => panic!("unexpected replay: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_rejects_timestamp_regression_on_old_branch_walk() {
+        let signing_key = SigningKey::from_bytes(&[41u8; 32]);
+        let genesis = Block::genesis();
+        let ghash = genesis.block_hash.clone();
+
+        let tx0 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_ts_rb"),
+            1,
+            0,
+            0,
+            1_700_000_010,
+        );
+        let b1 = block_with_txs(1, &ghash, 2_000, vec![tx0]);
+        let tx1 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_ts_rb2"),
+            1,
+            0,
+            1,
+            1_700_000_011,
+        );
+        let b2_too_soon = block_with_txs(2, &b1.block_hash, 2_050, vec![tx1]);
+
+        let mut index = BlockIndex::new();
+        index.insert(ghash.clone(), genesis_index_entry());
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(
+            b2_too_soon.block_hash.clone(),
+            child_entry(&b1.block_hash, 2),
+        );
+
+        let plan =
+            ReorgPlan::try_from_tips(&index, &b2_too_soon.block_hash, &b1.block_hash).unwrap();
+
+        let mut at_fork = fund_state_at_genesis(&signing_key, 100);
+        apply_block_to_state_for_test(&mut at_fork, &b1);
+
+        let mut at_tip = at_fork.clone();
+        apply_block_to_state_for_test(&mut at_tip, &b2_too_soon);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(b1.block_hash.clone(), b1.clone());
+        blocks.insert(b2_too_soon.block_hash.clone(), b2_too_soon.clone());
+
+        let material = ReplaySandboxMaterial {
+            state_at_fork: at_fork,
+            blocks_by_hash: blocks,
+            expected_state_at_old_tip: Some(at_tip),
+            consensus: ConsensusParams {
+                min_block_interval_secs: 100,
+                max_future_drift_secs: u64::MAX,
+            },
+            parent_blocks_by_hash: parent_headers_for(&genesis, &[b1.clone(), b2_too_soon.clone()]),
+        };
+
+        let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
+        match &r.replay {
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::TimestampPolicy { error, .. },
+            )) => {
+                assert!(matches!(error, &ProtocolError::InvalidBlock(_)));
+            }
+            other => panic!("unexpected replay: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_rejects_state_transition_wrong_nonce_on_apply() {
+        let signing_key = SigningKey::from_bytes(&[42u8; 32]);
+        let genesis = Block::genesis();
+        let ghash = genesis.block_hash.clone();
+
+        let tx0 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_nonce_ok"),
+            1,
+            0,
+            0,
+            1_700_000_020,
+        );
+        let b1 = block_with_txs(1, &ghash, 1_700_000_021, vec![tx0]);
+        let tx_wrong_nonce = make_signed_tx(
+            &signing_key,
+            Address::new("recv_nonce_bad"),
+            1,
+            0,
+            0,
+            1_700_000_022,
+        );
+        let b2 = block_with_txs(2, &b1.block_hash, 1_700_000_023, vec![tx_wrong_nonce]);
+
+        let mut index = BlockIndex::new();
+        index.insert(ghash.clone(), genesis_index_entry());
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(b2.block_hash.clone(), child_entry(&b1.block_hash, 2));
+
+        let plan = ReorgPlan::try_from_tips(&index, &b1.block_hash, &b2.block_hash).unwrap();
+
+        let mut at_fork = fund_state_at_genesis(&signing_key, 100);
+        apply_block_to_state_for_test(&mut at_fork, &b1);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(b1.block_hash.clone(), b1.clone());
+        blocks.insert(b2.block_hash.clone(), b2.clone());
+
+        let material = ReplaySandboxMaterial {
+            state_at_fork: at_fork,
+            blocks_by_hash: blocks,
+            expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: parent_headers_for(&genesis, &[b1.clone(), b2.clone()]),
+        };
+
+        let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
+        match &r.replay {
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::StateTransition { error, .. },
+            )) => {
+                assert_eq!(error, &ProtocolError::InvalidNonce);
+            }
+            other => panic!("unexpected replay: {other:?}"),
+        }
     }
 
     #[test]
@@ -892,9 +1314,14 @@ mod tests {
             state_at_fork: at_tip.clone(),
             blocks_by_hash: HashMap::new(),
             expected_state_at_old_tip: None,
+            consensus: default_consensus(),
+            parent_blocks_by_hash: HashMap::new(),
         };
         let fp_before = sandbox_state_fingerprint(&material.state_at_fork);
         let _ = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
-        assert_eq!(sandbox_state_fingerprint(&material.state_at_fork), fp_before);
+        assert_eq!(
+            sandbox_state_fingerprint(&material.state_at_fork),
+            fp_before
+        );
     }
 }
