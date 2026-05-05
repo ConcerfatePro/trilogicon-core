@@ -68,7 +68,7 @@ pub struct ReplaySandboxMaterial {
 /// Encoding: `u64_be(account_count)` then for each account in **sorted** `Address` string order:
 /// `u32_be(addr_len) || addr_utf8 || u64_be(balance) || u64_be(nonce)`.
 pub fn sandbox_state_fingerprint_preimage(state: &State) -> Vec<u8> {
-    let accounts: Vec<_> = state.accounts_sorted().collect();
+    let accounts = state.accounts_sorted();
     let mut out = Vec::new();
     let n = u64::try_from(accounts.len()).unwrap_or(u64::MAX);
     out.extend_from_slice(&n.to_be_bytes());
@@ -264,9 +264,9 @@ fn run_replay_on_clones(
     }
 
     let final_state_fingerprint = sandbox_state_fingerprint(&sandbox);
-    let final_supply_total = sandbox.total_balance_sum().map_err(|e| {
-        ReplaySandboxReplayError::SupplyAudit { error: e }
-    })?;
+    let final_supply_total = sandbox
+        .total_balance_sum()
+        .map_err(|e| ReplaySandboxReplayError::SupplyAudit { error: e })?;
 
     Ok(ReplaySandboxReplayOk {
         rollback_blocks_verified: plan.rollback_ordered.len(),
@@ -295,11 +295,13 @@ fn validate_block_against_index(
         })
     })?;
     if block.height != entry.height {
-        return Err(ReplaySandboxReplayError::IndexLinkMismatch(IndexLinkMismatch::Height {
-            block_hash: expected_hash.to_string(),
-            index_height: entry.height,
-            block_height: block.height,
-        }));
+        return Err(ReplaySandboxReplayError::IndexLinkMismatch(
+            IndexLinkMismatch::Height {
+                block_hash: expected_hash.to_string(),
+                index_height: entry.height,
+                block_height: block.height,
+            },
+        ));
     }
     if block.previous_hash != entry.parent_hash {
         return Err(ReplaySandboxReplayError::IndexLinkMismatch(
@@ -352,15 +354,19 @@ fn apply_block_to_state(
 ) -> Result<(), ReplaySandboxReplayError> {
     validate_block_against_index(block, index, block_hash)?;
     validate_timestamp_vs_parent(material, block, block_hash)?;
-    block.basic_validate().map_err(|e| ReplaySandboxReplayError::BasicValidation {
-        block_hash: block_hash.to_string(),
-        error: e,
-    })?;
-    for tx in &block.transactions {
-        state.apply_transaction(tx).map_err(|e| ReplaySandboxReplayError::StateTransition {
+    block
+        .basic_validate()
+        .map_err(|e| ReplaySandboxReplayError::BasicValidation {
             block_hash: block_hash.to_string(),
             error: e,
         })?;
+    for tx in &block.transactions {
+        state
+            .apply_transaction(tx)
+            .map_err(|e| ReplaySandboxReplayError::StateTransition {
+                block_hash: block_hash.to_string(),
+                error: e,
+            })?;
     }
     Ok(())
 }
@@ -380,8 +386,8 @@ mod tests {
     };
     use crate::block::Block;
     use crate::consensus::ConsensusParams;
-    use crate::errors::ProtocolError;
     use crate::crypto::Crypto;
+    use crate::errors::ProtocolError;
     use crate::genesis::Genesis;
     use crate::state::State;
     use crate::transaction::Transaction;
@@ -868,9 +874,11 @@ mod tests {
 
         let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
         match &r.replay {
-            ReplaySandboxReplayPhase::Completed(Err(ReplaySandboxReplayError::IndexLinkMismatch(
-                IndexLinkMismatch::BlockHashKey { .. },
-            ))) => {}
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::IndexLinkMismatch(IndexLinkMismatch::BlockHashKey {
+                    ..
+                }),
+            )) => {}
             other => panic!("unexpected replay: {other:?}"),
         }
     }
