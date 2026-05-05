@@ -113,6 +113,11 @@ pub enum IndexLinkMismatch {
         index_parent_hash: String,
         block_previous_hash: String,
     },
+    /// Parent header was found under `parent_key`, but the header declares a different hash.
+    ParentBlockHash {
+        parent_key: String,
+        parent_declared_hash: String,
+    },
 }
 
 /// Replay-time failures after structural + preflight gates passed.
@@ -319,13 +324,22 @@ fn resolve_parent_block<'a>(
     material: &'a ReplaySandboxMaterial,
     parent_key: &str,
 ) -> Result<&'a Block, ReplaySandboxReplayError> {
-    material
+    let parent = material
         .parent_blocks_by_hash
         .get(parent_key)
         .or_else(|| material.blocks_by_hash.get(parent_key))
         .ok_or_else(|| ReplaySandboxReplayError::MissingParentBlock {
             parent_hash: parent_key.to_string(),
-        })
+        })?;
+    if parent.block_hash != parent_key {
+        return Err(ReplaySandboxReplayError::IndexLinkMismatch(
+            IndexLinkMismatch::ParentBlockHash {
+                parent_key: parent_key.to_string(),
+                parent_declared_hash: parent.block_hash.clone(),
+            },
+        ));
+    }
+    Ok(parent)
 }
 
 fn validate_timestamp_vs_parent(
@@ -1112,6 +1126,78 @@ mod tests {
             ReplaySandboxReplayPhase::Completed(Err(
                 ReplaySandboxReplayError::MissingParentBlock { parent_hash },
             )) => assert_eq!(parent_hash, &b1.block_hash),
+            other => panic!("unexpected replay: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn replay_rejects_parent_header_hash_mismatch_for_timestamp_check() {
+        let signing_key = SigningKey::from_bytes(&[44u8; 32]);
+        let genesis = Block::genesis();
+        let ghash = genesis.block_hash.clone();
+
+        let tx0 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_parent_mismatch0"),
+            1,
+            0,
+            0,
+            1_700_000_700,
+        );
+        let b1 = block_with_txs(1, &ghash, 1_000, vec![tx0]);
+        let tx1 = make_signed_tx(
+            &signing_key,
+            Address::new("recv_parent_mismatch1"),
+            1,
+            0,
+            1,
+            1_700_000_701,
+        );
+        let b2 = block_with_txs(2, &b1.block_hash, 1_050, vec![tx1]);
+
+        let mut index = BlockIndex::new();
+        index.insert(ghash.clone(), genesis_index_entry());
+        index.insert(b1.block_hash.clone(), child_entry(&ghash, 1));
+        index.insert(b2.block_hash.clone(), child_entry(&b1.block_hash, 2));
+
+        let plan = ReorgPlan::try_from_tips(&index, &b1.block_hash, &b2.block_hash).unwrap();
+
+        let mut at_fork = fund_state_at_genesis(&signing_key, 100);
+        apply_block_to_state_for_test(&mut at_fork, &b1);
+
+        let mut blocks = HashMap::new();
+        blocks.insert(b2.block_hash.clone(), b2.clone());
+
+        let mut wrong_parent = b1.clone();
+        wrong_parent.block_hash = "not-the-index-parent-hash".to_string();
+        wrong_parent.timestamp_unix = 0;
+
+        let mut parent_blocks = HashMap::new();
+        parent_blocks.insert(genesis.block_hash.clone(), genesis.clone());
+        parent_blocks.insert(b1.block_hash.clone(), wrong_parent);
+
+        let material = ReplaySandboxMaterial {
+            state_at_fork: at_fork,
+            blocks_by_hash: blocks,
+            expected_state_at_old_tip: None,
+            consensus: ConsensusParams {
+                min_block_interval_secs: 100,
+                max_future_drift_secs: u64::MAX,
+            },
+            parent_blocks_by_hash: parent_blocks,
+        };
+
+        let r = ReplaySandbox::run_report(&plan, &index, &permissive_policy(), &material);
+        match &r.replay {
+            ReplaySandboxReplayPhase::Completed(Err(
+                ReplaySandboxReplayError::IndexLinkMismatch(IndexLinkMismatch::ParentBlockHash {
+                    parent_key,
+                    parent_declared_hash,
+                }),
+            )) => {
+                assert_eq!(parent_key, &b1.block_hash);
+                assert_eq!(parent_declared_hash, "not-the-index-parent-hash");
+            }
             other => panic!("unexpected replay: {other:?}"),
         }
     }
