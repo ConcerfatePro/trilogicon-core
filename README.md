@@ -1,14 +1,14 @@
 # Trilogicon (TRIL)
 
-A minimal blockchain written in Rust. Accounts, signed transfers, blocks, nonces, and TCP sync between nodes. Simple and solid before anything more complex.
+Minimal blockchain written in rust.
 
 -----
 
 ## Status
 
-- **V1** — core protocol done (accounts, transfers, balances, nonces)
-- **V2** — current, on `main`. Adds restart safety, peer handshakes, CRC-framed chain writes, mempool cleanup
-- **V3** — planning only, not active yet
+- **V1** — first verison that created an outline for accounts, transfers, balances, nonces, and some other stuff
+- **V2** — improved the safety and security of V1 which helped fix some bugs and overall improved the project 
+- **V3** — currently working on this
 
 -----
 
@@ -25,7 +25,7 @@ Binary at `node/target/debug/node`.
 
 ## Running two nodes locally
 
-Every node must share the same `genesis.toml`.
+both nodes have to share the same genesis file
 
 ```bash
 # Initialize both nodes
