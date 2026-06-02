@@ -14,7 +14,7 @@ Trilogicon does **not** currently provide smart contracts, staking, validator ec
 
 ## Build and test
 
-```bash
+```
 cd node
 cargo build
 cargo test
@@ -28,7 +28,6 @@ The main binary is `node/target/debug/node` unless built with `--release`.
 Create the first wallet and a genesis file:
 
 ```bash
-cd node
 cargo run -- init --data-dir ./data-a --genesis-balance 10000000
 ```
 
@@ -64,6 +63,8 @@ cargo run -- send --data-dir ./data-a <B_ADDRESS> 100 1
 ```
 
 `send` only queues the transaction in `pending_tx.tril`. A running `node run` process drains the queue, seals a block, persists it, and gossips it.
+
+Running solo? Omit `--peers`.
 
 ## Data directory
 
