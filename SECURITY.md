@@ -1,13 +1,22 @@
 # Security
 
-Trilogicon is experimental V1 software. It is **not** audited for production use.
+Trilogicon is not production blockchain infrastructure. Treat it as a reference node and testnet project.
 
 ## Reporting issues
 
-If you believe you have found a security-sensitive bug (e.g. consensus divergence, cryptographic misuse, or remote crash/exploit against an honest node), please report it **privately** to the repository maintainers (use GitHub **Security Advisories** for this repository if enabled, or contact the org owners) instead of filing a public issue first.
+Open a private report with enough detail to reproduce the problem. Include:
 
-Include enough detail to reproduce: commit hash, platform, and minimal steps or a failing test when possible.
+- affected command or network path;
+- expected vs actual behavior;
+- logs with secrets removed;
+- steps to reproduce from a clean data directory if possible.
 
-## Out of scope for V1
+## Do not report as security issues
 
-See `docs/v1_scope.md`. Reports about missing features (smart contracts, staking, etc.) are welcome as regular issues, not as security disclosures.
+- Missing smart contracts, staking, governance, bridges, or production finality.
+- Lack of fork-choice/reorg execution in the live V1/V2 node.
+- Testnet faucet limitations unless they expose secrets or allow unintended payouts.
+
+## Local secrets
+
+`wallet.seed` is a private key seed. Do not commit it, paste it into issues, or reuse it outside disposable test networks.

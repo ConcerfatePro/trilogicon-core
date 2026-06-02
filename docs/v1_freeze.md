@@ -1,42 +1,14 @@
-# Trilogicon V1 Freeze
+# V1 Freeze
 
-## Status
-V1 is now feature-frozen.
+V1 protocol semantics are frozen for the V1 line.
 
-## Included in V1
-- native TRIL transfers
-- account balances
-- nonces
-- signature verification
-- block creation
-- block validation
-- chain validation
-- node sync
-- shared genesis
-- persistence/restart behavior
+Do not change under the V1 name:
 
-## Not changing during freeze
-- ledger model
-- transaction core fields
-- block core structure
-- nonce semantics
-- genesis model
-- validation rules
-- network message behavior unless fixing a bug
-- consensus behavior unless fixing a bug
+- transaction payload and signature rules;
+- nonce and balance application;
+- fee burn;
+- block structure and hash preimage;
+- genesis state rules;
+- linear chain validation.
 
-## Allowed during freeze
-- bug fixes
-- test fixes/additions
-- logging improvements
-- docs improvements
-- operator/runbook improvements
-- cleanup/refactors that do not change protocol behavior
-
-## Not allowed during freeze
-- smart contracts
-- staking
-- governance
-- new token systems
-- changing V1 scope
-- changing consensus-critical behavior unless required for a bug/security fix
+Fixes may improve tests, docs, diagnostics, or node hardening, but consensus changes need a later version scope.

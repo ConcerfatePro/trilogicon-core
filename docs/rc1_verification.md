@@ -1,19 +1,14 @@
-# RC1 Verification (historical)
+# V1 RC1 Verification
 
-**Note:** This note records **manual checks** performed around the **V1.0.0-rc1** candidate. **Current** completion criteria for the reference node are [`v1_checkpoint.md`](v1_checkpoint.md) and [`v2_checkpoint.md`](v2_checkpoint.md).
+Historical RC1 checklist.
 
-Release candidate: `v1.0.0-rc1`
+For the current tree, use:
 
-## Verified
-- fresh clone tested
-- `cargo test` passes
-- two-node local runbook tested manually
-- shared genesis setup tested manually
-- valid transaction flow tested manually
-- restart flow tested manually
-- invalid transaction rejection tested manually
-- missing wallet startup path tested manually
-- missing genesis startup path tested manually
+```bash
+cd node
+cargo fmt --check
+cargo test
+cargo clippy -- -D warnings
+```
 
-## Phase at time of writing
-RC1 hardening and private technical validation (historical).
+Then run the local two-node smoke test from the README if you need manual verification.

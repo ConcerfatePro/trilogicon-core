@@ -6,8 +6,7 @@
 use std::fmt;
 
 use ed25519_dalek::{Signer, SigningKey};
-use rand::rngs::OsRng;
-use rand::{CryptoRng, RngCore};
+use rand::RngCore;
 
 use crate::crypto::Crypto;
 use crate::errors::ProtocolError;
@@ -20,13 +19,14 @@ pub struct Wallet {
 }
 
 impl Wallet {
-    /// Random key from the OS RNG.
+    /// Random key from the thread-local RNG (seeded from the OS).
     pub fn generate() -> Self {
-        Self::generate_with_rng(&mut OsRng)
+        let mut rng = rand::rng();
+        Self::generate_with_rng(&mut rng)
     }
 
-    /// Random key from a provided CSPRNG (tests, deterministic fixtures via [`StdRng`](rand::rngs::StdRng)).
-    pub fn generate_with_rng<R: CryptoRng + RngCore>(rng: &mut R) -> Self {
+    /// Random key from a provided RNG (tests use [`StdRng`](rand::rngs::StdRng); production uses [`generate`](Self::generate)).
+    pub fn generate_with_rng<R: RngCore>(rng: &mut R) -> Self {
         let mut secret = [0u8; 32];
         rng.fill_bytes(&mut secret);
         Self {

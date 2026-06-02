@@ -300,7 +300,7 @@ mod tests {
     fn decode_random_inputs_do_not_panic() {
         use rand::RngCore;
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut buf = [0u8; 384];
         for _ in 0..2500 {
             rng.fill_bytes(&mut buf);

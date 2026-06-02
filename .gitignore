@@ -3,6 +3,19 @@ node/target/
 
 # Local node data (wallet seed, chain file, pending txs) — never commit
 node/tril_data/
+node/data-*/
+node/**/wallet.seed
+node/**/chain.blocks
+node/**/pending_tx.tril
+node/**/.pending_tx.lock
+node/**/genesis_bind.toml
+node/**/.genesis_bind.lock
+node/**/.node.run.lock
+node/**/peer_book.toml
+
+dev-test-ui/data-*/
+
+.DS_Store
 
 # Nested copy of the repo root (accidental); delete locally if not needed
 trilogicon-core/
