@@ -57,13 +57,13 @@ Running solo? Skip `--peers`.
 
 -----
 
-## Common issues
+## common issues
 
-**Nodes won’t sync** — make sure every node has the same `genesis.toml`.
+**Nodes not syncing** — make sure every node has the same `genesis.toml`.
 
-**Transaction sent but no block appeared** — `send` only queues the tx. A running `node run` process has to seal it.
+**Transaction is sent but no block appeared** — `send` only queues the tx. A running `node run` process has to seal it.
 
-**Node exits immediately** — another process holds the lock on that data directory. Only one `node run` per data dir.
+**Node quits or exits immediately** — another process is holding a lock onto that data directory. Only one `node run` per data dir.
 
 **Corrupt `chain.blocks`** — V2 fails closed rather than guessing. See `docs/design_notes/v2_persistence_restart.md`.
 
