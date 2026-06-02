@@ -1,14 +1,9 @@
-# Trilogicon RC1 — historical note
+# V1 RC1 Status
 
-The tag/branch **`release/v1.0.0-rc1`** was used during **V1 release-candidate** stabilization. That work is **subsumed** on **`main`**: the reference node now includes **V2 node hardening** merged and integrated.
+Historical note for the old V1 release-candidate branch.
 
-**Do not use this file as the project’s current status.**
+Current development has moved past this point. Use the V1/V2 checkpoint and freeze docs for the current baseline:
 
-For **today’s** truth:
-
-| Topic | Document |
-|--------|----------|
-| V1 core complete | [`v1_checkpoint.md`](v1_checkpoint.md) |
-| V2 hardening complete | [`v2_checkpoint.md`](v2_checkpoint.md) |
-| V2 definition | [`v2_scope.md`](v2_scope.md) |
-| Limitations | [`known_issues.md`](known_issues.md) |
+- [`v1_checkpoint.md`](v1_checkpoint.md)
+- [`v2_checkpoint.md`](v2_checkpoint.md)
+- [`v2_freeze.md`](v2_freeze.md)

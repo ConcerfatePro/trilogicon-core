@@ -1,54 +1,20 @@
-# Trilogicon dev test UI (local only)
+# Trilogicon Dev Test UI
 
-**Not a wallet. Not for production. Not for untrusted networks.**
+Small localhost-only helper for development. It is not a wallet, explorer, or production interface.
 
-Small Axum server on **`127.0.0.1`** that:
-
-- Reads **`chain.blocks`** and **`genesis.toml`** from a `--data-dir` (read-only replay for display — does **not** apply the same tail-repair path as `node` startup, to avoid mutating disk from this tool).
-- Shows pending **`pending_tx.tril`** frame count (parse-only).
-- Detects whether **`.node.run.lock`** is held (likely `node run` active).
-- **Queues transfers** like **`node send`** using **`wallet.seed`** in that data directory.
-- **Reject-path helpers** (Send page → expandable section): optional **nonce override** (stale `n−1`, gap `n+1` presets) and **insufficient-balance** preset (`amount` = full balance + fee so `amount+fee > balance`). All still produce **valid signatures**; the running `node` rejects or drops them per protocol/mempool policy — use to exercise `[seal]` / `[mempool]` behavior locally.
+The UI can inspect a data directory, look up account state, and queue test transfers through the local node CLI. It does **not** replace `node run`; keep the real node running in another terminal if you want blocks sealed or synced.
 
 ## Run
 
-From repository root:
-
 ```bash
 cd dev-test-ui
-cargo run -- --data-dir ../node/data-a
+cargo run -- --node-bin ../node/target/debug/node --data-dir ../node/data-a
 ```
 
-Or with an explicit listen address (must stay on `127.0.0.1`):
+Open the printed localhost URL.
 
-```bash
-cargo run -- --data-dir ../node/data-a --listen 127.0.0.1:9847
-```
+## Notes
 
-Open **http://127.0.0.1:9847/** in a browser.
-
-In another terminal, run the real node so blocks seal and peers work:
-
-```bash
-cd ../node
-cargo run -- run --data-dir ../node/data-a --listen 127.0.0.1:9333 --interval-secs 2
-```
-
-## Security
-
-- The binary **refuses** to bind to non-loopback addresses.
-- **No authentication** — intended only on your machine.
-- **Private keys** stay in `wallet.seed` on disk; this UI only uses them when you click send (same trust model as CLI `send` for that data dir).
-
-## CI
-
-The main project CI targets the **`node`** crate. This crate is optional; run locally:
-
-```bash
-cd dev-test-ui
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
-
-(There are no tests yet; clippy/fmt still apply.)
+- Uses the same local files as the node: `wallet.seed`, `genesis.toml`, `chain.blocks`, and `pending_tx.tril`.
+- Intended for throwaway data directories.
+- Do not expose it beyond localhost.

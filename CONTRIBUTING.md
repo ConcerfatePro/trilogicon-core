@@ -1,42 +1,37 @@
-# Contributing to Trilogicon
+# Contributing
 
-## Project layout
+Trilogicon is intentionally small. Changes should keep the node easier to audit, not make it look bigger than it is.
 
-- **`node/`** — Rust crate: library + `node` binary (`cargo` commands run from here unless noted).
-- **`dev-test-ui/`** — Optional **local-only** Axum helper for development (not a wallet; not in default CI). See [`dev-test-ui/README.md`](dev-test-ui/README.md).
-- **`docs/`** — Protocol scope, invariants, genesis, module ownership; checkpoints [`v1_checkpoint.md`](docs/v1_checkpoint.md), [`v2_checkpoint.md`](docs/v2_checkpoint.md); V2 freeze [`v2_freeze.md`](docs/v2_freeze.md); V3 planning [`v3_scope.md`](docs/v3_scope.md); release notes under [`docs/releases/`](docs/releases/).
-
-## Quick checks (same as CI)
-
-GitHub Actions runs the same three steps on **ubuntu-latest**, **windows-latest**, and **macos-latest** for pushes and PRs to `main`, plus a **cargo audit** job (see `.github/workflows/ci.yml`). Dependabot proposes **GitHub Actions** updates weekly (`.github/dependabot.yml`).
-
-From the repository root, using **GNU Make** (Git Bash, WSL, macOS, Linux):
-
-```bash
-make ci
-```
-
-Or run the underlying Cargo commands from `node/`:
+## Before a PR
 
 ```bash
 cd node
-cargo fmt --all -- --check
-cargo clippy --all-targets -- -D warnings
+cargo fmt --check
 cargo test
+cargo clippy -- -D warnings
 ```
 
-Stable Rust with `rustfmt` and `clippy` is recorded in `rust-toolchain.toml` at the repo root (`rustup` will pick it up when you `cd node`).
+If the change touches the local dev UI, run its checks from `dev-test-ui/` as well.
 
-Subprocess integration tests (`cli_*_e2e.rs`) take roughly **40+ seconds** because they start real `node` processes and use wall-clock delays.
+## Scope rules
 
-If you touch **`dev-test-ui/`**, run `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, and `cargo test` from that directory as well (see `dev-test-ui/README.md`).
+- Do not change consensus behavior unless the relevant scope doc says that work is open.
+- V2 is node hardening, not a consensus redesign.
+- V3 is design/planning until explicitly approved for implementation.
+- Do not add smart contracts, staking, governance, DeFi, bridges, or token features as incidental changes.
+- Keep operator-facing behavior documented when it changes.
 
-## Hygiene
+## Code style
 
-- Do **not** commit `wallet.seed`, `chain.blocks`, `pending_tx.tril`, or local `data-*` directories (see `.gitignore`).
-- Prefer keeping **consensus and validation** in `node/src/` core modules, not only in `main.rs` (see `docs/modules.md`).
+- Prefer small, testable changes.
+- Use existing module boundaries and error types where possible.
+- Keep comments for non-obvious invariants, not for every assignment.
+- Avoid broad refactors mixed with behavior changes.
 
-## Pull requests
+## Docs style
 
-- Keep changes focused and consistent with `docs/v1_scope.md`.
-- If you add a new rejection rule or invariant, extend `docs/protocol_invariants.md` and, when practical, `src/rejection_matrix_tests.rs`.
+Docs should be plain, technical, and direct. Explain what works, what does not, and how to run or verify it. Avoid whitepaper language.
+
+## Secrets
+
+Never commit `wallet.seed`, test data directories, private keys, local `.env` files, or generated chain data.

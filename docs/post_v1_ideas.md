@@ -1,12 +1,12 @@
 # Post-V1 Ideas
 
-Back-burner ideas that are **not** committed scope for the **current** reference node (see [`v2_checkpoint.md`](v2_checkpoint.md)). Use for **future protocol** (e.g. V3) or product directions that should not land as silent `main` changes.
+Backlog only. Nothing here is implemented just because it is listed.
 
-## Rule
-If an idea expands protocol scope or needs a versioned spec before code, it belongs here until scheduled.
+- richer sync diagnostics;
+- better local operator tooling;
+- release packaging;
+- V3 branch/index/reorg design;
+- faucet/testnet infrastructure;
+- possible future protocol changes such as chain ID or fee routing.
 
-## Future ideas
-
-Structured **V2** scope and backlog: [`v2_scope.md`](v2_scope.md). **V2** release freeze: [`v2_freeze.md`](v2_freeze.md). **V3** planning (not implementation): [`v3_scope.md`](v3_scope.md). **V2.1** polish ideas: still record here or in [`vision.md`](vision.md) until scheduled.
-
-- 
+Consensus changes need their own scope doc and tests.

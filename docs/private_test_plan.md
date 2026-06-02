@@ -1,28 +1,21 @@
-# Trilogicon V1 Private Test Plan
+# Private Test Plan
 
-## Target
-Release candidate: `v1.0.0-rc1`
+Use this before tagging or sharing a build.
 
-## Goal
-Run a small private technical test phase focused on correctness, stability, and operator experience.
+```bash
+cd node
+cargo fmt --check
+cargo test
+cargo clippy -- -D warnings
+```
 
-## What this phase is for
-- confirming the README/runbook works for real operators
-- confirming two-node setup works repeatedly
-- confirming restart behavior is stable
-- confirming valid transactions work correctly
-- confirming invalid transactions fail cleanly
-- finding bugs before any broader public release
+Manual smoke test:
 
-## Test areas
-- clone + build
-- `cargo test`
-- two-node shared-genesis setup
-- valid transfer flow
-- restart and resend flow
-- invalid transaction rejection
-- chain persistence after restart
+1. Create two fresh data directories.
+2. Build one shared `genesis.toml` with both addresses.
+3. Run two nodes locally.
+4. Send one transfer.
+5. Stop and restart both nodes.
+6. Confirm height and balances reload consistently.
 
-## Notes
-This phase is for bug discovery, docs cleanup, and reliability hardening.
-It is not for adding new V1 features.
+Also test one failure path: wrong genesis, corrupt chain file, or second `node run` on the same data directory.
